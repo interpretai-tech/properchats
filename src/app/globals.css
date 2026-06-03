@@ -1,0 +1,330 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Theme tokens (claude.ai-like warm palette) ------------------------- */
+:root {
+  /* Single brand source of truth. The accent (and everything derived from it)
+     references this, so changing this one line re-skins the whole app across
+     light and dark. */
+  --brand: #eb5875;
+
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --surface-2: #f3f1ea;
+  --surface-3: #ece9df;
+  --border: #e7e3d8;
+  --ink: #1f1e1d;
+  --muted: #6b6a64;
+  --faint: #9b9a91;
+  --accent: var(--brand);
+  --accent-fg: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--brand) 14%, #ffffff);
+  --user-bubble: #f3f1ea;
+  --danger: #b4493a;
+
+  /* Pure system stacks (no network dependency). Defined at :root so they
+     resolve everywhere; UI sans still prefers Geist via the body's font-sans
+     class. Code stays monospace (SF Mono/Menlo) and prose uses an editorial
+     serif (Iowan/Palatino) even when webfonts can't be fetched. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia,
+    Cambria, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #262624;
+  --surface: #30302e;
+  --surface-2: #211f1d;
+  --surface-3: #3a3936;
+  --border: #3c3b38;
+  --ink: #f3f1ea;
+  --muted: #b2b0a8;
+  --faint: #82817b;
+  --accent: var(--brand);
+  --accent-fg: #1f1e1d;
+  --accent-soft: color-mix(in srgb, var(--brand) 24%, #211f1d);
+  --user-bubble: #3a3936;
+  --danger: #e0816e;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+}
+
+/* Thin, unobtrusive scrollbars to match a polished chat surface. */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--faint);
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* ---- Markdown prose, tuned to read like claude.ai ----------------------- */
+/* Assistant responses use a Tiempos-like serif (claude.ai reading feel); UI
+   chrome and user messages stay sans. */
+.prose-chat {
+  /* Inherit the container's color so a per-message provider hue (set inline in
+     MessageItem) tints the reply text; defaults to var(--ink) everywhere else. */
+  color: inherit;
+  font-family: var(--font-serif), Georgia, "Times New Roman", serif;
+  font-size: 1.0625rem;
+  /* Line spacing is user-tweakable via Settings; App.tsx sets --prose-leading
+     on :root from settings.lineSpacing. Fallback keeps no-JS / SSR readable. */
+  line-height: var(--prose-leading, 1.5);
+  letter-spacing: 0.001em;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.prose-chat > :first-child {
+  margin-top: 0;
+}
+.prose-chat > :last-child {
+  margin-bottom: 0;
+}
+.prose-chat p {
+  margin: 0.9em 0;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3,
+.prose-chat h4 {
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 1.5em 0 0.6em;
+}
+.prose-chat h1 {
+  font-size: 1.5rem;
+}
+.prose-chat h2 {
+  font-size: 1.3rem;
+}
+.prose-chat h3 {
+  font-size: 1.12rem;
+}
+.prose-chat h4 {
+  font-size: 1rem;
+}
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0.85em 0;
+  padding-left: 1.5em;
+}
+.prose-chat ul {
+  list-style: disc;
+}
+.prose-chat ol {
+  list-style: decimal;
+}
+.prose-chat li {
+  margin: 0.28em 0;
+}
+/* GFM task lists: clean accent checkbox, no bullet. */
+.prose-chat li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -1.35em;
+}
+.prose-chat input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1.05em;
+  height: 1.05em;
+  margin-right: 0.5em;
+  vertical-align: -0.16em;
+  border: 1.5px solid var(--faint);
+  border-radius: 4px;
+  background: var(--surface);
+  position: relative;
+  cursor: default;
+}
+.prose-chat input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.prose-chat input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 0.32em;
+  top: 0.12em;
+  width: 0.28em;
+  height: 0.55em;
+  border: solid var(--accent-fg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.prose-chat li > ul,
+.prose-chat li > ol {
+  margin: 0.35em 0;
+}
+.prose-chat li::marker {
+  color: var(--faint);
+}
+.prose-chat a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-chat blockquote {
+  margin: 1em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.prose-chat hr {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.prose-chat strong {
+  font-weight: 650;
+}
+/* Inline code (fenced blocks are handled by the CodeBlock component). */
+.prose-chat :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  background: var(--surface-3);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 0.1em 0.34em;
+  border-radius: 5px;
+  word-break: break-word;
+  font-variant-ligatures: none;
+}
+.prose-chat table {
+  width: 100%;
+  margin: 1em 0;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  display: block;
+  overflow-x: auto;
+}
+.prose-chat th,
+.prose-chat td {
+  border: 1px solid var(--border);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.prose-chat th {
+  background: var(--surface-3);
+  font-weight: 600;
+}
+.prose-chat .katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.prose-chat img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+/* ---- LaTeX viewer (LatexBlock) ----------------------------------------- */
+/* Rendered surface reads like prose; KaTeX inherits --ink so it tracks theme. */
+.latex-rendered .katex-display {
+  margin: 0.35em 0;
+}
+.latex-rendered .katex-display:first-child {
+  margin-top: 0;
+}
+.latex-rendered .katex-display:last-child {
+  margin-bottom: 0;
+}
+/* Prose text interleaved with math in a mixed LaTeX block. */
+.latex-text {
+  white-space: pre-wrap;
+}
+/* Raw-source view: monospace, same metrics as the code surface. */
+pre.latex-source {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--surface-2);
+  white-space: pre;
+}
+pre.latex-source code {
+  font-family: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+}
+
+/* ---- Shiki code surface (inside the CodeBlock chrome) ------------------- */
+.code-surface > pre.shiki,
+pre.code-fallback {
+  margin: 0;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+  background: transparent !important;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  letter-spacing: normal;
+  font-variant-ligatures: none;
+  tab-size: 2;
+}
+.code-surface pre.shiki code,
+pre.code-fallback code {
+  font-family: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+  font-size: inherit;
+}
+pre.code-fallback {
+  white-space: pre;
+}
+.code-surface pre.shiki:focus-visible {
+  outline: none;
+}
+
+/* Blinking caret appended to the streaming assistant message. */
+.stream-caret::after {
+  content: "▍";
+  margin-left: 1px;
+  color: var(--accent);
+  animation: blink 1s steps(1) infinite;
+}
