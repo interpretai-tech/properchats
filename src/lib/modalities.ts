@@ -10,19 +10,21 @@ export type { Modality };
  * models can actually read it?" so the composer can auto-detect an upload's type
  * and restrict the model picker accordingly.
  *
- * Grounding (input understanding, conservative):
+ * Grounding (input understanding, verified against current provider docs):
  * - Gemini: text, image, audio, video, pdf (native multimodal).
- * - Claude: text, image, pdf. No video, no audio.
- * - OpenAI (our gp- tiers via chat/completions): text, image. No video/audio/pdf.
+ * - Claude: text, image, pdf (all active models read PDFs). No video, no audio.
+ * - OpenAI: text, image, pdf (gpt-4o and later are vision-capable and accept
+ *   PDF file inputs via chat/completions `file` parts). No video/audio.
  *
- * NOTE: video/audio also cannot travel through the interpret route today (its
+ * NOTE: pdf/video/audio cannot travel through the interpret route today (its
  * ChatTurn only carries text + image_urls), so those uploads must go DIRECT to a
- * provider that supports them (Gemini).
+ * provider that supports them. PDFs are sent as native document blocks; see
+ * server/providers.ts.
  */
 const PROVIDER_INPUTS: Record<Provider, Modality[]> = {
   gemini: ["text", "image", "audio", "video", "pdf"],
   anthropic: ["text", "image", "pdf"],
-  openai: ["text", "image"],
+  openai: ["text", "image", "pdf"],
 };
 
 const EXT_MODALITY: Record<string, Modality> = {
@@ -50,6 +52,11 @@ export function modelInputModalities(modelId: string): Modality[] {
 
 export function modelSupportsModality(modelId: string, modality: Modality): boolean {
   return modelInputModalities(modelId).includes(modality);
+}
+
+/** True if a provider can accept the given input modality (provider-level check). */
+export function providerSupportsModality(provider: Provider, modality: Modality): boolean {
+  return (PROVIDER_INPUTS[provider] ?? ["text"]).includes(modality);
 }
 
 /** Catalog models that can accept the given input modality. */

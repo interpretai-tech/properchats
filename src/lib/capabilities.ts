@@ -84,6 +84,16 @@ function defaultDirectModel(provider: Provider): string {
   return m!.directModel;
 }
 
+/**
+ * Providers that can generate images, in preference order. OpenAI's flagship
+ * families stream images via the Responses `image_generation` tool, and Gemini
+ * via its image models; Anthropic has no image-generation surface. OpenAI is
+ * listed first because it works on every current deploy. A non-image model
+ * (Claude) offers these as explicit fallback picks rather than silently
+ * rerouting an image turn to a provider the user didn't choose.
+ */
+export const IMAGE_PROVIDERS: Provider[] = ["openai", "gemini"];
+
 /** Whether a given provider can serve a capability natively. */
 export function providerSupports(provider: Provider, cap: Capability): boolean {
   return getCapability(cap).providers.includes(provider);

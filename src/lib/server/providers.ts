@@ -21,7 +21,12 @@ export interface DispatchInput {
   /** Concrete id: interpret tier (route=interpret) or provider model id (route=direct). */
   model: string;
   system: string;
-  messages: { role: "user" | "assistant"; content: string; image_urls?: string[] }[];
+  messages: {
+    role: "user" | "assistant";
+    content: string;
+    image_urls?: string[];
+    documents?: { url: string; mime: string }[];
+  }[];
   maxTokens: number;
   temperature?: number;
   /** Gemini thinking budget passthrough: 0 off, -1 dynamic, >0 cap; omit for the
@@ -99,6 +104,49 @@ async function errorText(res: Response): Promise<string> {
 }
 
 // --------------------------------------------------------------------------
+// Document (PDF) passthrough. A document arrives as a `data:` URL (base64) or
+// an http(s) URL. Each provider reads PDFs natively but wants a different block
+// shape; these builders translate one document into the right native form
+// (verified against current provider docs).
+// --------------------------------------------------------------------------
+
+type DocRef = { url: string; mime: string };
+
+/** Split a `data:<mime>;base64,<data>` URL into its media type and base64 payload. */
+function parseDataUrl(url: string): { mediaType: string; data: string } | null {
+  const m = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(url);
+  if (!m || !m[2]) return null; // only base64 data URLs carry raw bytes we can forward
+  return { mediaType: m[1] || "application/octet-stream", data: m[3] };
+}
+
+/** Anthropic `document` content block: base64 source for data: URLs, else url source. */
+function anthropicDocumentBlock(doc: DocRef): Record<string, unknown> {
+  const parsed = doc.url.startsWith("data:") ? parseDataUrl(doc.url) : null;
+  const source = parsed
+    ? { type: "base64", media_type: doc.mime || parsed.mediaType || "application/pdf", data: parsed.data }
+    : { type: "url", url: doc.url };
+  return { type: "document", source };
+}
+
+/** OpenAI chat/completions `file` part (base64 data URL via file_data). */
+function openaiFileBlock(doc: DocRef): Record<string, unknown> {
+  return { type: "file", file: { filename: "document.pdf", file_data: doc.url } };
+}
+
+/** Gemini part: inline_data (base64) for data: URLs, else file_data with a uri. */
+function geminiDocumentPart(doc: DocRef): Record<string, unknown> {
+  const parsed = doc.url.startsWith("data:") ? parseDataUrl(doc.url) : null;
+  return parsed
+    ? { inline_data: { mime_type: doc.mime || parsed.mediaType || "application/pdf", data: parsed.data } }
+    : { file_data: { file_uri: doc.url, mime_type: doc.mime || "application/pdf" } };
+}
+
+/** Whether a turn carries any attached media (images or documents). */
+function hasMedia(m: DispatchInput["messages"][number]): boolean {
+  return Boolean(m.image_urls?.length) || Boolean(m.documents?.length);
+}
+
+// --------------------------------------------------------------------------
 // interpret backend (staging.interpretai.tech)
 // --------------------------------------------------------------------------
 async function* interpretStream(input: DispatchInput): AsyncGenerator<StreamEvent> {
@@ -126,7 +174,14 @@ async function* interpretStream(input: DispatchInput): AsyncGenerator<StreamEven
     body: JSON.stringify({
       model: input.model,
       system: input.system || "",
-      messages: input.messages,
+      // The interpret ChatTurn carries only text + image_urls; never leak
+      // `documents` here (PDF turns are forced to a direct provider call, but a
+      // PDF left in history could otherwise ride along on a later interpret turn).
+      messages: input.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.image_urls?.length ? { image_urls: m.image_urls } : {}),
+      })),
       max_tokens: input.maxTokens,
       ...(input.temperature != null ? { temperature: input.temperature } : {}),
       ...(input.thinkingBudget != null ? { thinking_budget: input.thinkingBudget } : {}),
@@ -245,12 +300,13 @@ async function* anthropicStream(input: DispatchInput): AsyncGenerator<StreamEven
       model: input.model,
       ...(input.system ? { system: input.system } : {}),
       messages: input.messages.map((m) =>
-        m.image_urls?.length
+        hasMedia(m)
           ? {
               role: m.role,
               content: [
                 ...(m.content ? [{ type: "text", text: m.content }] : []),
-                ...m.image_urls.map((url) => ({ type: "image", source: { type: "url", url } })),
+                ...(m.image_urls ?? []).map((url) => ({ type: "image", source: { type: "url", url } })),
+                ...(m.documents ?? []).map(anthropicDocumentBlock),
               ],
             }
           : { role: m.role, content: m.content },
@@ -351,12 +407,13 @@ async function* openaiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
   const messages = [
     ...(input.system ? [{ role: "system", content: input.system }] : []),
     ...input.messages.map((m) =>
-      m.image_urls?.length
+      hasMedia(m)
         ? {
             role: m.role,
             content: [
               ...(m.content ? [{ type: "text", text: m.content }] : []),
-              ...m.image_urls.map((url) => ({ type: "image_url", image_url: { url } })),
+              ...(m.image_urls ?? []).map((url) => ({ type: "image_url", image_url: { url } })),
+              ...(m.documents ?? []).map(openaiFileBlock),
             ],
           }
         : { role: m.role, content: m.content },
@@ -531,6 +588,7 @@ function geminiContents(input: DispatchInput) {
       ...(m.image_urls ?? []).map((url) => ({
         file_data: { file_uri: url, mime_type: "image/jpeg" },
       })),
+      ...(m.documents ?? []).map(geminiDocumentPart),
     ],
   }));
 }

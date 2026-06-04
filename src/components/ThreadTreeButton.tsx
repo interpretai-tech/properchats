@@ -1,8 +1,8 @@
 "use client";
 
-import { CornerDownRight, MessagesSquare, Network } from "lucide-react";
+import { ChevronDown, CornerDownRight, MessagesSquare, Network } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { getModel, modelLabel } from "@/lib/models";
 import { useDismiss } from "@/lib/hooks";
@@ -41,6 +41,17 @@ export function ThreadTreeButton({ chatId }: { chatId: string }) {
 
   const threadCount = rows.length - 1;
 
+  // The list is a compact scroll window (it intentionally shows only a handful
+  // of rows at a time). Track whether more rows sit below the fold so we can
+  // show an explicit "scroll for more" affordance - otherwise, with the
+  // platform's auto-hiding thin scrollbar, a tall tree reads as if it were
+  // capped at the few visible rows.
+  const [canScrollDown, setCanScrollDown] = useState(false);
+  const updateScroll = useCallback(() => {
+    const el = listRef.current;
+    setCanScrollDown(!!el && el.scrollHeight - el.scrollTop - el.clientHeight > 4);
+  }, []);
+
   const select = (row: Row) => {
     if (row.depth === 0) closeThread();
     else openThread(row.node.id);
@@ -51,15 +62,20 @@ export function ThreadTreeButton({ chatId }: { chatId: string }) {
   // list. Without this the list opens scrolled to the root, so an active deep
   // thread sits off-screen at the bottom and you have to scroll to find it.
   useEffect(() => {
-    if (!open) return;
     const id = requestAnimationFrame(() => {
+      if (!open) {
+        setCanScrollDown(false);
+        return;
+      }
       const list = listRef.current;
       const active = activeRef.current;
-      if (!list || !active) return;
-      list.scrollTop += active.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      if (list && active) {
+        list.scrollTop += active.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      }
+      updateScroll();
     });
     return () => cancelAnimationFrame(id);
-  }, [open]);
+  }, [open, updateScroll]);
 
   if (!chat) return null;
 
@@ -94,7 +110,12 @@ export function ThreadTreeButton({ chatId }: { chatId: string }) {
                 : `${threadCount} thread${threadCount === 1 ? "" : "s"} · click to open`}
             </p>
           </div>
-          <div ref={listRef} className="max-h-[216px] overflow-y-auto scrollbar-thin py-1">
+          <div className="relative">
+            <div
+              ref={listRef}
+              onScroll={updateScroll}
+              className="max-h-[min(70vh,420px)] overflow-y-auto scrollbar-thin py-1"
+            >
             {rows.map(({ node, depth }) => {
               const model = getModel(node.currentModelId);
               const isActive =
@@ -136,6 +157,12 @@ export function ThreadTreeButton({ chatId }: { chatId: string }) {
                 </button>
               );
             })}
+            </div>
+            {canScrollDown && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-9 items-end justify-center bg-gradient-to-t from-surface via-surface/80 to-transparent">
+                <ChevronDown size={14} className="mb-1 animate-bounce text-faint" />
+              </div>
+            )}
           </div>
           <Link
             href="/viz"

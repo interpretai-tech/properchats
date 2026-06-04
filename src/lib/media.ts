@@ -54,14 +54,23 @@ export async function uploadFile(file: File): Promise<MediaDescriptor> {
         required_headers?: Record<string, string>;
       };
       if (d.uri) {
-        if (!d.deduped && d.presigned_put_url) {
-          await fetch(d.presigned_put_url, {
+        // Already stored (content-addressed dedupe): the bytes are present.
+        if (d.deduped) {
+          return { uri: d.uri, modality, mime, size: file.size, sha256 };
+        }
+        // Otherwise the PUT must succeed before we can trust the s3 uri; if it
+        // fails (or no URL was issued), fall through to the inline data: URL so
+        // we never record a reference to bytes that aren't actually there.
+        if (d.presigned_put_url) {
+          const put = await fetch(d.presigned_put_url, {
             method: "PUT",
             headers: d.required_headers ?? { "Content-Type": mime },
             body: bytes,
           });
+          if (put.ok) {
+            return { uri: d.uri, modality, mime, size: file.size, sha256 };
+          }
         }
-        return { uri: d.uri, modality, mime, size: file.size, sha256 };
       }
     }
   } catch {

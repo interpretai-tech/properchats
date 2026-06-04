@@ -7,10 +7,18 @@ import {
   chooseRoute,
   DEFAULT_MODEL_ID,
   getModel,
+  MODELS,
   modelConcreteId,
   modelLabel,
+  PROVIDERS,
 } from "./models";
-import { providerAvailability, resolveCapability } from "./capabilities";
+import {
+  type Availability,
+  IMAGE_PROVIDERS,
+  providerAvailability,
+  resolveCapability,
+} from "./capabilities";
+import { providerSupportsModality } from "./modalities";
 import { DEFAULT_OUTPUT_TOKENS, STORE_NAME, THEME_KEY, THREAD_WIDTH_DEFAULT } from "./constants";
 import { contextTokens, needsCompaction } from "./context";
 import { buildContext, canBranch, deriveTitle, descendantIds } from "./tree";
@@ -114,6 +122,19 @@ interface TurnPlan {
 }
 
 /**
+ * Immediate, capability-specific status shown the instant a tool turn starts —
+ * before the provider's first event arrives (which can take seconds for image
+ * generation / research) — so the user always gets feedback like "Generating
+ * image…" instead of generic dots. The provider's own status events override it.
+ */
+const CAPABILITY_START_STATUS: Partial<Record<Capability, string>> = {
+  web_search: "Searching the web…",
+  image: "Generating image…",
+  deep_research: "Researching…",
+  code: "Running code…",
+};
+
+/**
  * Plan a turn for a node's current model and a chosen capability. Plain chat
  * uses the catalog model + normal interpret/direct routing; a capability
  * resolves to the provider that natively serves it (always a direct call).
@@ -123,6 +144,7 @@ function planTurn(
   capability: Capability,
   keys: ApiKeys,
   cfg: ServerConfig | null,
+  hasDocuments: boolean,
 ): TurnPlan {
   if (capability && capability !== "chat") {
     const resolved = resolveCapability(capability, modelId, providerAvailability(keys, cfg));
@@ -137,13 +159,84 @@ function planTurn(
     }
   }
   const model = getModel(modelId);
-  const route = chooseRoute(model.provider, keys, cfg);
+  // A PDF turn must go DIRECT: the interpret route's ChatTurn carries only
+  // text + image_urls and would silently drop the document. Force direct so
+  // the provider adapter can emit the native document block.
+  const route = hasDocuments ? "direct" : chooseRoute(model.provider, keys, cfg);
   return {
     provider: model.provider,
     route,
     model: modelConcreteId(model, route),
     modelName: modelLabel(model, route),
     capability: "chat",
+  };
+}
+
+/** Short verb phrase per capability for the "<provider> can't <phrase>" block. */
+const CANT_DO_PHRASE: Partial<Record<Capability, string>> = {
+  image: "generate images",
+};
+
+/**
+ * Guard against silently rerouting an image turn to a provider the user didn't
+ * pick. Only image-capable providers can serve it (see IMAGE_PROVIDERS); on a
+ * model that can't (Claude), the old behavior quietly resolved to another
+ * provider and the user got a cryptic error. Returns a block descriptor — a
+ * helpful message + the image-capable providers to offer — or null when the turn
+ * can proceed (chat, a tool capability, or an already image-capable model).
+ *
+ * Capabilities run as direct provider calls, so only providers with a usable key
+ * (BYO or server-side) are offered as fallbacks.
+ */
+function capabilityBlock(
+  modelId: string,
+  capability: Capability,
+  avail: Availability,
+): { message: string; providers: Provider[] } | null {
+  if (capability !== "image") return null; // tool capabilities reroute fine
+  const provider = getModel(modelId).provider;
+  if (IMAGE_PROVIDERS.includes(provider)) return null;
+  const label = PROVIDERS[provider].label;
+  const phrase = CANT_DO_PHRASE[capability] ?? "do that";
+  const providers = IMAGE_PROVIDERS.filter((p) => avail[p]);
+  if (providers.length) {
+    return { message: `${label} can't ${phrase}. Pick a model that can:`, providers };
+  }
+  const names = IMAGE_PROVIDERS.map((p) => PROVIDERS[p].company).join(" or ");
+  return {
+    message: `${label} can't ${phrase}. Add an API key for ${names} in Settings to ${phrase}.`,
+    providers: [],
+  };
+}
+
+/** A representative catalog model for a provider (its large tier), used to plan
+ *  a capability turn on a provider the user explicitly picked. */
+function representativeModelId(provider: Provider): string {
+  const m =
+    MODELS.find((x) => x.provider === provider && x.size === "large") ??
+    MODELS.find((x) => x.provider === provider);
+  return (m ?? MODELS[0]).id;
+}
+
+/** Plan a capability turn on a specific provider (the picked image fallback). */
+function capabilityPlanForProvider(
+  capability: Capability,
+  provider: Provider,
+  keys: ApiKeys,
+  cfg: ServerConfig | null,
+): TurnPlan | null {
+  const resolved = resolveCapability(
+    capability,
+    representativeModelId(provider),
+    providerAvailability(keys, cfg),
+  );
+  if (!resolved) return null;
+  return {
+    provider: resolved.provider,
+    route: resolved.route,
+    model: resolved.model,
+    modelName: resolved.modelName,
+    capability,
   };
 }
 
@@ -249,6 +342,13 @@ interface StoreState {
   ) => Promise<void>;
   stopStream: (nodeId: string) => void;
   regenerate: (nodeId: string) => Promise<void>;
+  /** Re-run a capability turn on a specific provider the user picked (image fallback). */
+  generateWithProvider: (
+    nodeId: string,
+    messageId: string,
+    capability: Capability,
+    provider: Provider,
+  ) => Promise<void>;
   compact: (nodeId: string) => Promise<void>;
   /** Best-effort: ask each provider's API for a model's real context window. */
   detectModelWindow: (modelId: string) => Promise<void>;
@@ -308,13 +408,21 @@ export const useStore = create<StoreState>()(
 
       /**
        * A thread the user opened but never chatted in: a non-root node with no
-       * messages and no sub-threads. The rule "a thread persists iff the user
-       * actually chats in it" is enforced by pruning these whenever we navigate
-       * away from them, so opening a thread and closing it without sending leaves
-       * no trace in the tree, the thread list, or persisted storage.
+       * messages, no sub-threads, and no highlighted excerpt. The rule "a thread
+       * persists iff the user put something in it" is enforced by pruning these
+       * whenever we navigate away, so opening a thread and closing it without
+       * sending (and without a captured excerpt) leaves no trace in the tree, the
+       * thread list, or persisted storage.
        */
       const isEmptyThread = (n: ConvNode | undefined): boolean =>
-        Boolean(n) && n!.parentId !== null && n!.messages.length === 0 && n!.childIds.length === 0;
+        Boolean(n) &&
+        n!.parentId !== null &&
+        n!.messages.length === 0 &&
+        n!.childIds.length === 0 &&
+        // A thread branched from a highlighted excerpt carries that excerpt as
+        // deliberate, visible content the user captured on purpose, so it is NOT
+        // empty and persists even before the first reply.
+        !n!.highlight;
 
       /** Drop one empty thread node and unlink it from its parent. No-op otherwise. */
       const discardIfEmptyThread = (nodeId: string | null | undefined) => {
@@ -363,6 +471,10 @@ export const useStore = create<StoreState>()(
         const controller = new AbortController();
         controllers.set(nodeId, controller);
         set((s) => ({ streamingNodeIds: { ...s.streamingNodeIds, [nodeId]: assistantId } }));
+
+        // Show capability feedback immediately, before the first provider event.
+        const startStatus = CAPABILITY_START_STATUS[plan.capability];
+        if (startStatus) setStatus(nodeId, startStatus);
 
         // Buffer deltas/reasoning and flush at ~25fps so markdown re-renders stay
         // smooth even when tokens arrive faster than the browser can paint.
@@ -702,7 +814,23 @@ export const useStore = create<StoreState>()(
           const modelId = node.currentModelId;
           const { keys } = get().settings;
           const cfg = get().serverConfig;
-          const plan = planTurn(modelId, capability, keys, cfg);
+          // Don't silently reroute an image turn to a provider the user didn't
+          // pick (e.g. Claude). Block with a helpful error + offer the
+          // image-capable providers the user can run directly.
+          const capBlock = capabilityBlock(modelId, capability, providerAvailability(keys, cfg));
+          // A PDF attachment forces a direct provider call (the interpret route
+          // can't carry documents). Plan accordingly so the right provider/route
+          // is chosen before we check whether that provider can read PDFs.
+          const hasPdf = Boolean(media?.some((a) => a.modality === "pdf"));
+          const plan = capBlock
+            ? planTurn(modelId, "chat", keys, cfg, false)
+            : planTurn(modelId, capability, keys, cfg, hasPdf);
+          // Fail loud when a PDF is attached but the resolved provider can't read
+          // one. Record the reply as an error and skip the stream.
+          const pdfBlock =
+            !capBlock && hasPdf && !providerSupportsModality(plan.provider, "pdf")
+              ? `This model from ${PROVIDERS[plan.provider].company} doesn't support PDF. Switch to a model that reads PDFs.`
+              : undefined;
           const now = nowISO();
           const userMsg: Message = {
             id: uid(),
@@ -718,8 +846,12 @@ export const useStore = create<StoreState>()(
             modelId,
             provider: plan.provider,
             route: plan.route,
-            capability: plan.capability,
+            capability: capBlock ? capability : plan.capability,
             modelName: plan.modelName,
+            ...(capBlock ? { error: capBlock.message } : pdfBlock ? { error: pdfBlock } : {}),
+            ...(capBlock && capBlock.providers.length
+              ? { capabilityFallback: { capability, providers: capBlock.providers } }
+              : {}),
             createdAt: now,
           };
 
@@ -755,6 +887,11 @@ export const useStore = create<StoreState>()(
             return { nodes: { ...s.nodes, [nodeId]: updatedNode }, chats, chatOrder };
           });
 
+          // A blocked image turn is recorded as an errored reply with fallback
+          // picks; nothing to stream until the user chooses a provider. A PDF
+          // turn whose provider can't read PDFs is likewise an errored reply.
+          if (capBlock || pdfBlock) return;
+
           // Auto-compact older history if we're nearing the model's window.
           await maybeAutoCompact(nodeId);
           await runStream(nodeId, assistantMsg.id, plan);
@@ -783,7 +920,32 @@ export const useStore = create<StoreState>()(
           const capability = assistant.capability ?? "chat";
           const { keys } = get().settings;
           const cfg = get().serverConfig;
-          const plan = planTurn(node.currentModelId, capability, keys, cfg);
+          // If the turn already ran on an image-capable provider (a fallback the
+          // user picked), redo it there. Otherwise apply the same image guard as
+          // sendMessage so a regenerate can't silently reroute either.
+          const serving =
+            capability === "image" &&
+            assistant.provider &&
+            IMAGE_PROVIDERS.includes(assistant.provider)
+              ? assistant.provider
+              : undefined;
+          const capBlock = serving
+            ? null
+            : capabilityBlock(node.currentModelId, capability, providerAvailability(keys, cfg));
+          // A PDF anywhere in this node's history forces a direct call on regen
+          // too (mirrors sendMessage); the document travels in the rebuilt context.
+          const hasPdf = node.messages.some((m) =>
+            m.attachments?.some((a) => a.modality === "pdf"),
+          );
+          const plan: TurnPlan =
+            (serving ? capabilityPlanForProvider(capability, serving, keys, cfg) : null) ??
+            (capBlock
+              ? planTurn(node.currentModelId, "chat", keys, cfg, false)
+              : planTurn(node.currentModelId, capability, keys, cfg, hasPdf));
+          const pdfBlock =
+            !serving && !capBlock && hasPdf && !providerSupportsModality(plan.provider, "pdf")
+              ? `This model from ${PROVIDERS[plan.provider].company} doesn't support PDF. Switch to a model that reads PDFs.`
+              : undefined;
           patchNode(nodeId, (n) => {
             const messages = n.messages.slice();
             messages[lastIdx] = {
@@ -793,18 +955,52 @@ export const useStore = create<StoreState>()(
               sources: undefined,
               reasoning: undefined,
               activity: undefined,
-              error: undefined,
+              error: capBlock?.message ?? pdfBlock,
+              capabilityFallback:
+                capBlock && capBlock.providers.length
+                  ? { capability, providers: capBlock.providers }
+                  : undefined,
               modelId: n.currentModelId,
               provider: plan.provider,
               route: plan.route,
-              capability: plan.capability,
+              capability: capBlock ? capability : plan.capability,
               modelName: plan.modelName,
               createdAt: nowISO(),
             };
             return { ...n, messages };
           });
+          if (capBlock || pdfBlock) return;
           await maybeAutoCompact(nodeId);
           await runStream(nodeId, assistant.id, plan);
+        },
+
+        async generateWithProvider(nodeId, messageId, capability, provider) {
+          const node = get().nodes[nodeId];
+          if (!node || get().streamingNodeIds[nodeId]) return;
+          if (!node.messages.some((m) => m.id === messageId)) return;
+          const { keys } = get().settings;
+          const cfg = get().serverConfig;
+          const plan = capabilityPlanForProvider(capability, provider, keys, cfg);
+          if (!plan) return;
+          // Reset the blocked message (clear the error + fallback chips) and
+          // stream the chosen provider's result into it.
+          patchMessage(nodeId, messageId, (m) => ({
+            ...m,
+            content: "",
+            images: undefined,
+            sources: undefined,
+            reasoning: undefined,
+            activity: undefined,
+            error: undefined,
+            capabilityFallback: undefined,
+            provider: plan.provider,
+            route: plan.route,
+            capability: plan.capability,
+            modelName: plan.modelName,
+            createdAt: nowISO(),
+          }));
+          await maybeAutoCompact(nodeId);
+          await runStream(nodeId, messageId, plan);
         },
 
         async compact(nodeId) {

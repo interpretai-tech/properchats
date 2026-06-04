@@ -46,9 +46,21 @@ export function descendantIds(nodes: NodeMap, nodeId: string): string[] {
   return out;
 }
 
+/** A document attachment (e.g. a PDF) forwarded to providers that read it natively. */
+export interface ContextDocument {
+  /** The attachment URI: a `data:` URL (base64) or an http(s) URL. */
+  url: string;
+  mime: string;
+}
+
 export interface BuiltContext {
   system: string;
-  messages: { role: "user" | "assistant"; content: string; image_urls?: string[] }[];
+  messages: {
+    role: "user" | "assistant";
+    content: string;
+    image_urls?: string[];
+    documents?: ContextDocument[];
+  }[];
 }
 
 /**
@@ -67,7 +79,12 @@ export function buildContext(
 ): BuiltContext {
   const path = nodePath(nodes, nodeId);
   const summaries: string[] = [];
-  const messages: { role: "user" | "assistant"; content: string; image_urls?: string[] }[] = [];
+  const messages: BuiltContext["messages"] = [];
+  // Images the assistant GENERATED (`m.images`) are shown back to the model as
+  // input on the next user turn — across all providers an image is only valid in
+  // a user/input position, and this is where the model "sees" what it previously
+  // made (so a follow-up like "make it blue" works).
+  let pendingGenImages: string[] = [];
 
   for (let i = 0; i < path.length; i++) {
     const node = path[i];
@@ -98,15 +115,36 @@ export function buildContext(
     for (let j = start; j < end; j++) {
       const m = node.messages[j];
       if (!m || m.role === "system" || m.error) continue;
-      const imageUrls = m.attachments
-        ?.filter((a) => a.modality === "image" && a.uri)
-        .map((a) => a.uri);
-      const hasImages = Boolean(imageUrls && imageUrls.length);
-      if (!m.content.trim() && !hasImages) continue;
+
+      if (m.role === "assistant") {
+        // Emit the assistant's text; carry any images it generated forward to
+        // the next user turn (where they're a valid input the model can see).
+        if (m.content.trim()) messages.push({ role: "assistant", content: m.content });
+        const gen = (m.images ?? []).filter((u) => /^(s3:|https?:|data:)/.test(u));
+        if (gen.length) pendingGenImages = [...pendingGenImages, ...gen];
+        continue;
+      }
+
+      // User turn: its own image attachments, plus any generated images carried
+      // from the preceding assistant turn so the model can reason about them.
+      const attached =
+        m.attachments?.filter((a) => a.modality === "image" && a.uri).map((a) => a.uri) ?? [];
+      const imageUrls = [...pendingGenImages, ...attached];
+      pendingGenImages = [];
+      const hasImages = imageUrls.length > 0;
+      // Documents (PDFs) are read natively by Claude/Gemini/OpenAI; forward them
+      // as their own content blocks rather than dropping them.
+      const documents =
+        m.attachments
+          ?.filter((a) => a.modality === "pdf" && a.uri)
+          .map((a) => ({ url: a.uri, mime: a.mime })) ?? [];
+      const hasDocuments = documents.length > 0;
+      if (!m.content.trim() && !hasImages && !hasDocuments) continue;
       messages.push({
-        role: m.role === "assistant" ? "assistant" : "user",
+        role: "user",
         content: m.content,
         ...(hasImages ? { image_urls: imageUrls } : {}),
+        ...(hasDocuments ? { documents } : {}),
       });
     }
   }

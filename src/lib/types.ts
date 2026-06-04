@@ -67,6 +67,13 @@ export interface Message {
   attachments?: MediaAttachment[];
   /** Set on an assistant turn that failed; holds the error text. */
   error?: string;
+  /**
+   * Set on an image turn blocked because the selected model can't generate
+   * images (e.g. Claude). Carries the capability and the image-capable
+   * providers to offer, so the UI can let the user pick a fallback explicitly
+   * instead of silently rerouting (which produced cryptic backend errors).
+   */
+  capabilityFallback?: { capability: Capability; providers: Provider[] };
   createdAt: string;
 }
 

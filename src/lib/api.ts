@@ -1,4 +1,5 @@
 import { readSSE } from "./sse";
+import type { ContextDocument } from "./tree";
 import type { ApiKeys, Capability, Provider, Route, ServerConfig, Source, StreamEvent } from "./types";
 
 export interface ChatRequest {
@@ -6,7 +7,12 @@ export interface ChatRequest {
   provider: Provider;
   model: string;
   system: string;
-  messages: { role: "user" | "assistant"; content: string; image_urls?: string[] }[];
+  messages: {
+    role: "user" | "assistant";
+    content: string;
+    image_urls?: string[];
+    documents?: ContextDocument[];
+  }[];
   maxTokens: number;
   temperature?: number;
   /** Gemini thinking budget passthrough (0 off, -1 dynamic, >0 cap); omit for the

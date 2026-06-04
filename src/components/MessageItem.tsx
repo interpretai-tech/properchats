@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
-import { getModel, modelLabel, providerInk } from "@/lib/models";
+import { getModel, modelLabel, providerInk, PROVIDERS } from "@/lib/models";
 import { highlightMatchesText, snippet, useStore } from "@/lib/store";
 import { ProviderDot } from "./ProviderDot";
 import type { ConvNode, Message, Source } from "@/lib/types";
@@ -254,10 +254,14 @@ export function MessageItem({
   const branchThread = useStore((s) => s.branchThread);
   const openThread = useStore((s) => s.openThread);
   const regenerate = useStore((s) => s.regenerate);
+  const generateWithProvider = useStore((s) => s.generateWithProvider);
   const status = useStore((s) => (isStreaming ? s.streamingStatus[nodeId] : undefined));
 
   const isUser = message.role === "user";
   const hasImages = Boolean(message.images && message.images.length);
+  // Image-capable providers offered when an image turn was blocked (the selected
+  // model can't generate images); lets the user pick which one to use.
+  const fallback = message.capabilityFallback;
   const hasTrace = Boolean(
     (message.reasoning && message.reasoning.trim()) || (message.activity && message.activity.length),
   );
@@ -417,6 +421,21 @@ export function MessageItem({
               ))}
             </div>
           )}
+          {/* A generated image still inline (data:) after streaming won't be
+              persisted (inline images are stripped to protect localStorage
+              quota), so warn the user it may vanish on refresh. */}
+          {!isStreaming && message.images?.some((src) => src.startsWith("data:")) && (
+            <div
+              data-testid="image-too-large"
+              className="mt-2 flex items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400"
+            >
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span className="break-words">
+                This image won&apos;t be saved and may disappear after you refresh. Try generating a
+                smaller image.
+              </span>
+            </div>
+          )}
           {message.sources && message.sources.length > 0 && <Sources sources={message.sources} />}
           {message.error && (
             <div
@@ -425,6 +444,23 @@ export function MessageItem({
             >
               <AlertTriangle size={15} className="mt-0.5 shrink-0" />
               <span className="break-words">{message.error}</span>
+            </div>
+          )}
+          {fallback && fallback.providers.length > 0 && (
+            <div data-testid="capability-fallback" className="mt-2 flex flex-wrap gap-1.5">
+              {fallback.providers.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  data-testid={`capability-fallback-${p}`}
+                  disabled={isStreaming}
+                  onClick={() => generateWithProvider(nodeId, message.id, fallback.capability, p)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1 text-[12.5px] font-medium text-muted transition hover:border-accent/40 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <ProviderDot provider={p} />
+                  Use {PROVIDERS[p].label}
+                </button>
+              ))}
             </div>
           )}
         </div>
