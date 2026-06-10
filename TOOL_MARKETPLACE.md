@@ -151,6 +151,41 @@ OSS + MCP-native).
 - Lob remains the designated PostAgent fallback/extension for physical mail
   (ties into task #110: platform-billed mail evaluation).
 
+### 2026-06-10 — Task #110 verdict: PostAgent vs platform-billed mail (Lob) — GO for hybrid
+
+Code-grounded eval (mail_toolset.py, usage.ts, this doc's "MAIL, twice"
+example; lob.com + postgrid.com fetched 2026-06-10). **GO for the hybrid,
+NO-GO for full replacement.**
+
+| Axis | PostAgent (today) | Lob | PostGrid (alt) |
+|---|---|---|---|
+| Billing | user-paid Stripe checkout; zero platform risk | platform-billed; Developer $0/mo PAYG, **$0.806/letter** ($0.636 on $260/mo Startup) | $1.019–1.179/letter, free tier to 500 |
+| Formats | pdf/html/md/text/docx/image, **30 MB** cap | **PDF <5 MB + HTML only** (Webkit, merge vars) | PDF/HTML |
+| International | US-only (hard-coded) | yes (240+ countries) | yes |
+| Tracking | job polling, 5-state machine | **webhooks** (USPS scans) + real test env | 1 webhook free |
+
+Platform cost at 10/100/500 letters/mo: $8 / $81 / $403 (Lob Developer).
+A $2 mail-credit over Lob's $0.806 ≈ $1.19/letter gross margin.
+
+**Recommendation:** keep both bindings, tier-select — free/basic →
+PostAgent user-paid (zero platform risk; could even unblock from today's
+`blocked` with a small rate-limit cap), monthly/insane → Lob
+platform-billed with 5/mo allowance + `creditsFallback` credit packs.
+Three corrections to this doc's Manifest-B sketch: Lob Developer is $0/mo
+PAYG (not invoice-only); Lob's **5 MB PDF cap** breaks our 30 MB
+assumption (enforce 5 MB on the Lob path or route big PDFs to PostAgent);
+no native image format (wrap `attached_image` in HTML — remote assets OK
+on Lob's renderer, unlike PostAgent).
+
+Wiring (existing seams only): (1) Lob provider class beside
+PostAgentClient inside the same `mail` toolset, tier-selected; result =
+letter id + thumbnail, `letter_created` status; (2) usage.ts gains
+`consumeMail` mirroring `consumeSubmittalReview` (generalize the
+credit-composing RPC to capability-keyed); gate pre-check + post-stream
+`meterMailOnSend` unchanged; (3) a `mailLetter` card (id, status, Lob
+proof thumbnail, cancel-while-cancellable) — PostAgent path stays prose.
+Unverified before shipping cancel UI: Lob's cancellation-window length.
+
 ### 2026-06-10 — Tool observability is now live-ready (status update to §4)
 
 Both halves of the §4 hook landed today in the private trees: the
