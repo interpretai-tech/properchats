@@ -115,3 +115,44 @@ community tools are first-class in the same dashboards.
 - OTEL→Grafana pivot started in the obs tree (SigNoz terraform module slated
   for removal; Tempo + otel-collector added next to the existing
   Prometheus/Grafana helm releases).
+
+### 2026-06-10 — Trending tool candidates (researched via PH/HN leaderboards + vendor pages)
+
+| Tool | What | Effort | Pricing | OSS | Card idea |
+|---|---|---|---|---|---|
+| **fal.ai** | One API for trending video/image models (Veo 3.1, Kling 3.0, Seedance 2.0, Flux 2) | **S** — one `generate_video/image` tool, async polling matches the SSE loop | Pure usage (Kling $0.07/s, Seedream $0.03/img) | no | Inline video player card + "remix" button |
+| **ElevenLabs** | TTS, music gen, SFX, dubbing, voice agents | **S** — POST → audio bytes | Free 10K chars; PAYG; Music $0.15/min | no | Waveform audio card — "your business jingle in 10s" |
+| **Firecrawl** | Scrape/crawl/monitor any site → LLM-ready markdown (~131K stars) | **S** — endpoints map 1:1 to tools, output already markdown | Free 1k credits/mo; from $16/mo | **yes** | Page-snapshot card + diff badge on Monitor fire |
+| **Exa / Websets** | Neural search + lead-list enrichment (email/phone) | S–M (enrichment is async/webhook) | 1k free req/mo; $7/1k searches, $0.02/email | no | Lead-list card feeding the globe + mail toolset |
+| **Shovels** | US building permits (130M+) + contractors (2.3M+); new zoning Decisions API | **S** — one GET per lookup; best brand fit (submittal_review synergy) | Free in-app search; API via sales | no | Permit timeline per address; jurisdiction heatmap on globe |
+| **RentCast** | Property records, AVM home value/rent + comps, MCP server bundled | **S** — 3-4 synchronous GET tools | Free 50 calls/mo; from $74/mo | no | Property card: value gauge, rent est., comps mini-map |
+| **Vapi** | Voice AI phone agents (real outbound/inbound calls) | M — webhooks for live transcript | $0.05/min + pass-through; 60 free min | no | Call card: live status, recording, AI summary |
+| **Tavus** | Real-time AI avatar video (clone from ~1 min footage) | M — async gen easy, live CVI harder | Free 25 min; $59/mo + $0.37/min | no | Avatar-video pitch card, one-click attach to mail |
+| **Cal.com v2** | Scheduling API: slots, bookings, webhooks | **S** — `find_slots`/`create_booking`, BYO key | Free plan incl. API key | **yes** (AGPL) | Booking confirmation card + reschedule |
+| **Documenso** | Open-source e-sign (DocuSign alt) | S–M — pairs with submittal PDF pipeline (review → sign) | Free 5 docs/mo; $25/mo + API | **yes** | Signature-status card with per-recipient chips |
+| **Postiz** | Publish/schedule to 30+ social networks; MCP-native | **S** — `schedule_post(channels, text, media, time)` | From $29/mo; self-host free | **yes** | Multi-platform post preview + countdown |
+| **Lob** | Programmatic physical mail (postcards/letters/checks) | **S** — mail toolset already emits HTML/PDF; one POST to make it physical | Free dev plan; ~$0.87/postcard | no | Postcard front/back render + USPS tracking timeline |
+| **Browserbase + Stagehand** | Cloud browsers for agents + new Search/Fetch APIs | M–L — session lifecycle; overlaps Firecrawl for simple cases | Free tier; $20/mo dev | Stagehand yes | Live session card with screenshot frames + action log |
+| **Stripe Agentic Commerce** | ACP/x402/agent wallets — in-chat checkout & machine payments | M — toolkit easy, token guardrails careful (Stripe already wired for mail) | Per-transaction | no | In-chat checkout card → confirmed receipt |
+
+**Shortlist (virality × ease):** 1. fal.ai (most shareable artifact a chat
+can emit), 2. ElevenLabs, 3. Firecrawl (also the OSS-marketplace flagship),
+4. Shovels (best "proper" brand fit), 5. Postiz (closes the content loop;
+OSS + MCP-native).
+
+**Decisions from this round:**
+- properchats-public (open marketplace) first additions should be the OSS
+  trio **Firecrawl, Cal.com, Postiz** (+ Documenso later) — all
+  self-hostable, all manifest-friendly, all keyless-or-BYOK.
+- Private (Sauron toolset) fast-path order: **fal.ai → ElevenLabs →
+  Shovels** — S-effort wraps, usage-priced (meter 1:1 on
+  `increment_capability_usage`), each yields a signature card (video /
+  audio / permit timeline).
+- Lob remains the designated PostAgent fallback/extension for physical mail
+  (ties into task #110: platform-billed mail evaluation).
+
+Sources: producthunt.com monthly leaderboards 2026/5+6, HN /best + /show,
+firecrawl.dev/pricing, exa.ai/pricing, shovels.ai, fal.ai/pricing,
+elevenlabs.io/pricing/api, cal.com/docs/api-reference/v2, documenso.com/pricing,
+postiz.com, lob.com/pricing, tavus.io/pricing, vapi.ai/pricing,
+rentcast.io/api, browserbase.com/pricing, docs.stripe.com/agentic-commerce.
