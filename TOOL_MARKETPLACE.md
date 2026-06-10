@@ -151,6 +151,24 @@ OSS + MCP-native).
 - Lob remains the designated PostAgent fallback/extension for physical mail
   (ties into task #110: platform-billed mail evaluation).
 
+### 2026-06-10 — Firecrawl binding design pinned (next build step)
+
+The first recipe-proving contribution is specified; implementation is
+mechanical from here:
+
+- `src/lib/tools/bindings/firecrawl.ts` — two functions:
+  `scrape_url(url, only_main_content?)` → POST `${FIRECRAWL_BASE_URL}/v2/scrape`
+  returning `{ url, title, markdown }` (markdown trimmed to ~8k chars with a
+  `truncated` flag — agent-sized output rule), and
+  `search_web(query, limit<=5)` → POST `/v2/search` returning compact
+  `{title, url, snippet}` rows.
+- Manifest: `id: "web_scrape"`, category `data`, **pricing `byok`**
+  (`auth.secrets: ["FIRECRAWL_API_KEY"]`) — first BYOK tool, which exercises
+  the one M1 path the keyless trio didn't; `FIRECRAWL_BASE_URL` env override
+  keeps the self-host door open (upstream: firecrawl/firecrawl, AGPL-3.0).
+- Tests: discovery + skip-if-unconfigured dispatch
+  (`test.skip(!process.env.FIRECRAWL_API_KEY, …)`), per the recipe.
+
 ### 2026-06-10 — M1 complete: listing fields + generated catalog
 
 `ToolManifest` gained the three marketplace fields (`category`,
