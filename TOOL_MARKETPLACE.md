@@ -151,6 +151,18 @@ OSS + MCP-native).
 - Lob remains the designated PostAgent fallback/extension for physical mail
   (ties into task #110: platform-billed mail evaluation).
 
+### 2026-06-10 — Tool observability is now live-ready (status update to §4)
+
+Both halves of the §4 hook landed today in the private trees: the
+infra side (SigNoz module removed; OTEL collector + Tempo deployed next to
+Prometheus/Grafana, Tempo datasource queryable in Explore) and the app side
+(swarm tracing now defaults to a `NullSpanEmitter` — spans buffer nothing
+unless an OTLP endpoint is configured, so pointing
+`OTEL_EXPORTER_OTLP_ENDPOINT` at `otel-collector.monitoring.svc:4318` is the
+single switch that lights up tool tracing in Grafana). Remaining item is
+unchanged: when M2 lands, the public bridge route emits one span per
+invocation tagged `tool.id`.
+
 ### 2026-06-10 — Firecrawl `web_scrape` SHIPPED (first BYOK tool, recipe proven)
 
 Built exactly to the pinned design and landed in one pass using
