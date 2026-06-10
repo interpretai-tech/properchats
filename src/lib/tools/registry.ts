@@ -16,6 +16,7 @@
 import { ToolError, type ToolManifest } from "./manifest";
 import { calculate } from "./bindings/calculator";
 import { stockQuote } from "./bindings/finance";
+import { scrapeUrl, searchWeb } from "./bindings/firecrawl";
 import { getWeather } from "./bindings/weather";
 
 const UNMETERED = {
@@ -161,6 +162,66 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     pricing: "keyless",
     maintainer: "ilianherzi",
   },
+
+  {
+    id: "web_scrape",
+    display: {
+      label: "Web scrape",
+      hint: "Read any web page as markdown, or search the web",
+      icon: "Globe",
+    },
+    description:
+      "scrape_url fetches a web page through Firecrawl and returns its main " +
+      "content as markdown (use it to READ a specific page the user names or " +
+      "a result you found); search_web returns up to 5 {title, url, snippet} " +
+      "results for a query. Prefer scrape_url over guessing page contents; " +
+      "results may be truncated — say so when `truncated` is true.",
+    binding: {
+      kind: "webhook",
+      endpoint: "/api/tools/web_scrape",
+      functions: [
+        {
+          name: "scrape_url",
+          description: "Fetch one http(s) page as LLM-ready markdown.",
+          parameters: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "Absolute http(s) URL to read." },
+              only_main_content: {
+                type: "boolean",
+                description: "Strip nav/boilerplate (default true).",
+              },
+            },
+            required: ["url"],
+          },
+        },
+        {
+          name: "search_web",
+          description: "Web search returning up to 5 results with snippets.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "The search query." },
+              limit: { type: "number", description: "Max results, 1-5 (default 5)." },
+            },
+            required: ["query"],
+          },
+        },
+      ],
+    },
+    providers: ["anthropic", "openai", "gemini"],
+    auth: { requiresSignIn: false, secrets: ["FIRECRAWL_API_KEY"] },
+    policy: { allowance: UNMETERED, meterMode: "per-turn" },
+    upstream: {
+      project: "Firecrawl",
+      repo: "https://github.com/firecrawl/firecrawl",
+      license: "AGPL-3.0",
+      author: "Firecrawl (Mendable.ai)",
+    },
+    category: "data",
+    pricing: "byok",
+    maintainer: "ilianherzi",
+  },
 ];
 
 export const TOOL_IDS: string[] = TOOL_MANIFESTS.map((t) => t.id);
@@ -181,6 +242,7 @@ const HANDLERS: Record<string, Record<string, ToolHandler>> = {
   weather: { get_weather: getWeather },
   calculator: { calculate },
   stock_quote: { stock_quote: stockQuote },
+  web_scrape: { scrape_url: scrapeUrl, search_web: searchWeb },
 };
 
 /**

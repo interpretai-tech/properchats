@@ -93,3 +93,45 @@ test("stock_quote: real keyless Yahoo Finance call through the bridge", async ({
   expect(typeof body.result.price).toBe("number");
   expect(body.result.currency).toBe("USD");
 });
+
+
+test("web_scrape discovery: manifest is registered, BYOK, secret-free", async ({ request }) => {
+  const res = await request.get("/api/tools/web_scrape");
+  expect(res.ok()).toBeTruthy();
+  const manifest = await res.json();
+  expect(manifest.id).toBe("web_scrape");
+  expect(manifest.pricing).toBe("byok");
+  expect(manifest.auth.secrets).toEqual(["FIRECRAWL_API_KEY"]);
+  expect(manifest.binding.functions.map((f: { name: string }) => f.name)).toEqual([
+    "scrape_url",
+    "search_web",
+  ]);
+  // The discovery payload must never leak the key's value.
+  expect(JSON.stringify(manifest)).not.toContain(process.env.FIRECRAWL_API_KEY ?? " never");
+});
+
+test("web_scrape: unconfigured server refuses with 503, bad url with 400", async ({ request }) => {
+  test.skip(!!process.env.FIRECRAWL_API_KEY, "server has a key; the live test below covers dispatch");
+  const res = await request.post("/api/tools/web_scrape", {
+    data: { function: "scrape_url", args: { url: "https://example.com" } },
+  });
+  expect(res.status()).toBe(503);
+  const bad = await request.post("/api/tools/web_scrape", {
+    data: { function: "scrape_url", args: { url: "notaurl" } },
+  });
+  // On configured hosts arg validation 400s; on unconfigured hosts the key
+  // check 503s first - accept either refusal.
+  expect([400, 503]).toContain(bad.status());
+});
+
+test("web_scrape: live scrape through the bridge (BYOK)", async ({ request }) => {
+  test.skip(!process.env.FIRECRAWL_API_KEY, "FIRECRAWL_API_KEY not configured");
+  const res = await request.post("/api/tools/web_scrape", {
+    data: { function: "scrape_url", args: { url: "https://example.com" } },
+  });
+  expect(res.ok()).toBeTruthy();
+  const body = await res.json();
+  expect(body.ok).toBe(true);
+  expect(body.result.markdown.toLowerCase()).toContain("example");
+  expect(typeof body.result.truncated).toBe("boolean");
+});

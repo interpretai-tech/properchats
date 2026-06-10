@@ -151,6 +151,19 @@ OSS + MCP-native).
 - Lob remains the designated PostAgent fallback/extension for physical mail
   (ties into task #110: platform-billed mail evaluation).
 
+### 2026-06-10 — Firecrawl `web_scrape` SHIPPED (first BYOK tool, recipe proven)
+
+Built exactly to the pinned design and landed in one pass using
+CONTRIBUTING_TOOLS.md — the recipe holds: one binding file
+(`bindings/firecrawl.ts`), one registry entry + dispatch arm, three specs.
+8/9 registry specs pass end-to-end (the 9th is the live BYOK dispatch test,
+skip-if-unconfigured as designed). Catalog regenerated: 4 tools.
+One recipe learning folded back into the binding: resolve `auth.secrets`
+keys BEFORE the upstream-fetch try block, or the 503 "not configured"
+refusal gets re-wrapped as a 502 — worth a line in CONTRIBUTING_TOOLS.md
+when it's next touched. Note for CI/dev: the repo needs Node >=20.9
+(`~/.nvm/versions/node/v22.22.0` works; system node is 20.0.0).
+
 ### 2026-06-10 — Firecrawl binding design pinned (next build step)
 
 The first recipe-proving contribution is specified; implementation is
