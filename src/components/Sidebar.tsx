@@ -1,6 +1,6 @@
 "use client";
 
-import { Moon, Plus, Settings, Sun, Trash2 } from "lucide-react";
+import { Moon, Pencil, Plus, Settings, Sun, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { useStore } from "@/lib/store";
@@ -26,6 +26,13 @@ function ChatRow({
   const commit = () => {
     if (draft.trim()) renameChat(id, draft.trim());
     setEditing(false);
+  };
+
+  // Shared entry point for both the double-click and the explicit pencil button:
+  // seed the draft with the current title and switch the row into inline edit.
+  const startEditing = () => {
+    setDraft(chat.title);
+    setEditing(true);
   };
 
   return (
@@ -55,13 +62,25 @@ function ChatRow({
           className="min-w-0 flex-1 truncate"
           onDoubleClick={(e) => {
             e.stopPropagation();
-            setDraft(chat.title);
-            setEditing(true);
+            startEditing();
           }}
         >
           {chat.title}
         </span>
       )}
+      {/* Explicit, discoverable rename affordance (double-click still works too);
+          stop propagation so the click doesn't also select/activate the chat. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          startEditing();
+        }}
+        aria-label="Rename chat"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-faint opacity-0 transition hover:bg-surface hover:text-ink group-hover:opacity-100"
+      >
+        <Pencil size={14} />
+      </button>
       <button
         type="button"
         onClick={(e) => {

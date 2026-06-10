@@ -1,7 +1,15 @@
 "use client";
 
 import { GitBranch } from "lucide-react";
-import { createContext, memo, type ReactNode, useContext } from "react";
+import {
+  cloneElement,
+  createContext,
+  isValidElement,
+  memo,
+  type ReactElement,
+  type ReactNode,
+  useContext,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -69,15 +77,158 @@ function ThreadMarkers({ threads, onOpen }: { threads: ConvNode[]; onOpen?: (id:
   );
 }
 
+/** A half-open `[start, end)` char range over a paragraph's concatenated text. */
+type Range = { start: number; end: number };
+
+/**
+ * Locate `excerpt` inside `text` ignoring case and treating any run of
+ * separators as equal. Separators are whitespace plus the markdown punctuation
+ * `# > * _ \` ~ |` that `snippet()` collapses to a space when a thread is
+ * claimed — so the range-finder normalizes identically to how the stored
+ * highlight was produced. Returns the range in *raw* `text` offsets, or null
+ * when it can't be found.
+ *
+ * We project both strings to a normalized form (lowercase, collapsed
+ * separators) and keep an offset map from each normalized char back to its raw
+ * index, so a match found in normalized space slices the raw text correctly.
+ */
+function findExcerptRange(text: string, excerpt: string): Range | null {
+  const target = excerpt.replace(/[\s#>*_`~|]+/g, " ").trim().toLowerCase();
+  if (!target) return null;
+
+  // Build the normalized projection of `text` plus a raw-offset map. A run of
+  // separator chars (whitespace or the markdown punctuation `snippet()` strips)
+  // collapses to a single space mapped to the run's first char, so this matches
+  // how a thread's highlight snippet was normalized when it was claimed.
+  let norm = "";
+  const rawAt: number[] = []; // rawAt[i] = raw index of norm[i]
+  let inSpace = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (/[\s#>*_`~|]/.test(ch)) {
+      if (!inSpace && norm.length) {
+        norm += " ";
+        rawAt.push(i);
+      }
+      inSpace = true;
+    } else {
+      norm += ch.toLowerCase();
+      rawAt.push(i);
+      inSpace = false;
+    }
+  }
+  const trimmed = norm.replace(/ $/, ""); // a trailing collapsed space never matters
+
+  const at = trimmed.indexOf(target);
+  if (at < 0) return null;
+  const start = rawAt[at];
+  // End is one past the last matched char; map the last normalized index to its
+  // raw index, then advance past that whole raw char.
+  const end = rawAt[at + target.length - 1] + 1;
+  return { start, end };
+}
+
+/** Merge overlapping/adjacent ranges so a char is never double-wrapped. */
+function mergeRanges(ranges: Range[]): Range[] {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const out: Range[] = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+    else out.push({ ...r });
+  }
+  return out;
+}
+
+/**
+ * Walk `node`, wrapping the portions that fall within `ranges` (expressed in
+ * concatenated-text offsets) in soft `<mark>`s. `offset` tracks where the
+ * current node starts in that concatenated text. Returns the rewritten node and
+ * the offset just past it. Element wrappers (e.g. <strong>, <a>) are preserved
+ * via cloneElement and recursed into, so a highlight can span across them.
+ */
+function markRanges(
+  node: ReactNode,
+  ranges: Range[],
+  offset: number,
+  keyPath: string,
+): { node: ReactNode; next: number } {
+  if (typeof node === "string" || typeof node === "number") {
+    const str = String(node);
+    const start = offset;
+    const end = offset + str.length;
+    // Emit alternating plain / highlighted slices for any range overlapping this
+    // text node. Spanning matches are handled because each text node is sliced
+    // independently against the same global ranges.
+    const parts: ReactNode[] = [];
+    let cursor = start;
+    for (const r of ranges) {
+      if (r.end <= start || r.start >= end) continue; // no overlap
+      const from = Math.max(r.start, start);
+      const to = Math.min(r.end, end);
+      if (from > cursor) parts.push(str.slice(cursor - start, from - start));
+      parts.push(
+        <mark key={`${keyPath}-mk-${from}`} className="branch-highlight">
+          {str.slice(from - start, to - start)}
+        </mark>,
+      );
+      cursor = to;
+    }
+    if (parts.length === 0) return { node: str, next: end };
+    if (cursor < end) parts.push(str.slice(cursor - start));
+    return { node: parts, next: end };
+  }
+
+  if (Array.isArray(node)) {
+    let cur = offset;
+    const out: ReactNode[] = node.map((child, i) => {
+      const r = markRanges(child, ranges, cur, `${keyPath}-${i}`);
+      cur = r.next;
+      return r.node;
+    });
+    return { node: out, next: cur };
+  }
+
+  if (isValidElement(node)) {
+    const el = node as ReactElement<{ children?: ReactNode }>;
+    const inner = markRanges(el.props.children, ranges, offset, `${keyPath}-c`);
+    // Preserve the element (and its props) so links/bold still render; only the
+    // children are rewritten with the highlight slices.
+    return {
+      node: cloneElement(el, { key: el.key ?? keyPath }, inner.node),
+      next: inner.next,
+    };
+  }
+
+  // null / boolean / unknown: contributes no text.
+  return { node, next: offset };
+}
+
 function Paragraph({ children }: { children?: ReactNode }) {
   const branch = useContext(BranchContext);
   const text = nodeText(children);
   // Threads branched from this exact paragraph get a persistent marker right
   // here, so the thread icon sits exactly where the branch was made.
   const threads = branch?.claimThreads?.(text) ?? [];
+
+  // Soft-highlight the exact excerpt(s) each thread branched from, so the user
+  // can see *where* in the paragraph a branch points. The stored highlight is a
+  // normalized, possibly `…`-truncated snippet, so strip that and locate it in
+  // the rendered text by whitespace-collapsed, case-insensitive match.
+  const ranges = mergeRanges(
+    threads
+      .map((t) => (t.highlight ? t.highlight.replace(/…$/u, "").trim() : ""))
+      .filter((ex) => ex.length > 0)
+      .map((ex) => findExcerptRange(text, ex))
+      .filter((r): r is Range => r != null),
+  );
+  // Degrade gracefully: if nothing matched (e.g. an excerpt spanning formatting
+  // oddly), leave the children untouched rather than risk a bad slice.
+  const content = ranges.length ? markRanges(children, ranges, 0, "hl").node : children;
+
   return (
     <p className="group/para relative pr-7">
-      {children}
+      {content}
       <ThreadMarkers threads={threads} onOpen={branch?.onOpenThread} />
       {branch?.canBranch && (
         <button

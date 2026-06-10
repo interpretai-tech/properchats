@@ -103,6 +103,15 @@ export interface ToolManifest {
     license: string;
     author: string;
   };
+
+  // ── Marketplace listing (TOOL_MARKETPLACE.md M1) ─────────────────────────
+  /** Catalog grouping, e.g. "data", "media", "productivity", "finance". */
+  category?: string;
+  /** How the binding is paid for: no key at all, bring-your-own-key, or
+   *  metered against the host's CAPABILITY_POLICY allowances. */
+  pricing?: "keyless" | "byok" | "metered";
+  /** GitHub handle of the binding's maintainer (the PR author). */
+  maintainer?: string;
 }
 
 /** Error with an HTTP status hint, thrown by bindings and the registry. */

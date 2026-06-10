@@ -67,6 +67,9 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
       license: "Apache-2.0",
       author: "Igor Chubin",
     },
+    category: "data",
+    pricing: "keyless",
+    maintainer: "ilianherzi",
   },
   {
     id: "calculator",
@@ -109,6 +112,9 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
       license: "Apache-2.0",
       author: "Jos de Jong",
     },
+    category: "productivity",
+    pricing: "keyless",
+    maintainer: "ilianherzi",
   },
   {
     id: "stock_quote",
@@ -151,6 +157,9 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
       license: "MIT",
       author: "Gadi Cohen",
     },
+    category: "finance",
+    pricing: "keyless",
+    maintainer: "ilianherzi",
   },
 ];
 

@@ -151,6 +151,17 @@ OSS + MCP-native).
 - Lob remains the designated PostAgent fallback/extension for physical mail
   (ties into task #110: platform-billed mail evaluation).
 
+### 2026-06-10 — M1 complete: listing fields + generated catalog
+
+`ToolManifest` gained the three marketplace fields (`category`,
+`pricing: keyless|byok|metered`, `maintainer`), all three live manifests are
+populated, and [TOOLS.md](TOOLS.md) is now **generated** from the registry
+(`npm run gen:tools` → `scripts/gen-tools-catalog.mjs`, executed with tsx
+against the typed registry so the catalog cannot drift from the code).
+M1 is done: recipe + listing metadata + auto-catalog. Next phase gate is
+**M2** (`manifestToToolDefs()` — manifests become model-callable in the chat
+loop), with the Firecrawl binding as its proving tool.
+
 ### 2026-06-10 — M1 ships: CONTRIBUTING_TOOLS.md
 
 [CONTRIBUTING_TOOLS.md](CONTRIBUTING_TOOLS.md) is in: the one-binding-file +

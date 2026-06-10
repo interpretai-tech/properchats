@@ -74,6 +74,18 @@
   }
 }
 
+/* A branched excerpt keeps a soft trace of the selection highlight — the
+   same --accent-soft, just more transparent — so you can see where a
+   thread was branched from without it reading as a live selection.
+   Unlayered so it wins over the UA <mark> yellow and prose styles. */
+mark.branch-highlight {
+  background-color: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
 /* Thin, unobtrusive scrollbars to match a polished chat surface. */
 @layer utilities {
   .scrollbar-thin {
