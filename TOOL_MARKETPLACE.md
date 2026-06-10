@@ -151,6 +151,16 @@ OSS + MCP-native).
 - Lob remains the designated PostAgent fallback/extension for physical mail
   (ties into task #110: platform-billed mail evaluation).
 
+### 2026-06-10 — M1 ships: CONTRIBUTING_TOOLS.md
+
+[CONTRIBUTING_TOOLS.md](CONTRIBUTING_TOOLS.md) is in: the one-binding-file +
+one-registry-entry + one-test recipe, with qualification rules (keyless/BYOK,
+license attribution, agent-sized output) and the PR checklist. Remaining M1
+items: the three new manifest fields (`category`, `pricing`, `maintainer`)
+and the generated `TOOLS.md` catalog. Next concrete tool: a **Firecrawl**
+binding (`scrape_url` first — free tier, OSS, output is already markdown),
+which will be the first contribution to exercise the recipe end-to-end.
+
 Sources: producthunt.com monthly leaderboards 2026/5+6, HN /best + /show,
 firecrawl.dev/pricing, exa.ai/pricing, shovels.ai, fal.ai/pricing,
 elevenlabs.io/pricing/api, cal.com/docs/api-reference/v2, documenso.com/pricing,
