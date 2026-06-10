@@ -52,3 +52,44 @@ export async function presignMediaPut(
     return null;
   }
 }
+
+/*
+ * Conversation-tree sync seam.
+ *
+ * The /api/conversations/{save,list,delete} routes (gated by
+ * NEXT_PUBLIC_IAI_STORE, off by default) proxy a backend conversation-tree
+ * store through these helpers. The tree-store HTTP endpoints are not part of
+ * the public backend API surface yet, so these are graceful no-ops with the
+ * same "degrade, never crash" contract as presignMediaPut: callers receive
+ * the same shapes as an unconfigured/failed backend and the client stays
+ * localStorage-only. Wire real endpoints here (keeping the signatures) to
+ * enable cross-device sync on a deployment that has the store.
+ */
+
+/** List every conversation tree for the deployment's org. */
+export async function listConversationTrees(credential: string): Promise<unknown[]> {
+  void credential;
+  return [];
+}
+
+/** Persist one chat's conversation tree. Returns whether the write succeeded. */
+export async function saveConversationTree(
+  credential: string,
+  conversationId: string,
+  tree: unknown,
+): Promise<boolean> {
+  void credential;
+  void conversationId;
+  void tree;
+  return false;
+}
+
+/** Delete one chat's conversation tree (idempotent). */
+export async function deleteConversationTree(
+  credential: string,
+  conversationId: string,
+): Promise<boolean> {
+  void credential;
+  void conversationId;
+  return false;
+}
