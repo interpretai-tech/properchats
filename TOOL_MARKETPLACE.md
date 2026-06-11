@@ -304,3 +304,17 @@ tool), and per-tool metering (see the meterable-pricing note above) is what
 makes stripping decidable. Second learning: meter per *invocation* in the
 turn's activity log, not per turn — agent loops can call one tool dozens of
 times per turn, and per-turn metering undercharges by exactly that factor.
+
+### 2026-06-11 — Two-plane usage telemetry: Grafana for cost, PostHog for product
+
+Decision: usage observability splits into two planes and tools shouldn't
+blur them. **Infra/cost plane** (landed): OTEL metrics → Prometheus →
+Grafana — tokens, requests, est-cost per provider/model/key-alias, vendor-
+billed spend. **Product plane** (building): PostHog — capability selected,
+turn sent/completed, run launched, paywall funnels, keyed by user id; lazy-
+loaded, env-gated no-op, hard no-content rule (labels only, no message
+text, no autocapture, no recording, /admin excluded). Marketplace rule:
+a contributed tool gets BOTH for free from the platform seams — the
+registry dispatch metric (cost plane) and a `tool_used {tool}` product
+event — so manifests never embed their own analytics SDKs (a binding that
+phones home fails review).
