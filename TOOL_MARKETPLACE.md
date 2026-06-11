@@ -1041,3 +1041,29 @@ Design implication: when wiring a cross-cloud integration, assume you may not be
 allowed to download a key and budget for WIF/keyless up front — the SDK code is
 identical either way (the client reads ADC); only the credential SOURCE differs,
 so this is a deploy/IAM decision, not an app-code one.
+
+### 2026-06-11 — Technique: rebasing a stale feature branch — use `--onto` (or squash-first), not a plain `rebase main`
+When a feature branch is well behind `main` AND its history includes commits
+that already landed in main under different hashes (squash-merge, cherry-pick,
+or evolved), a plain `git rebase origin/main` replays those already-merged
+commits and explodes into spurious conflicts on files the feature never
+touched (here: a swarm commit conflicting with main's evolved version, before
+git ever reached the actual feature work). Two clean ways out:
+- **`git rebase --onto origin/main <last-commit-before-your-work> <branch>`** —
+  replays ONLY the commits after that base, dropping the stale/already-merged
+  ones entirely (main already has them). You resolve conflicts only for YOUR
+  changes.
+- **Squash-first:** `git reset --soft <your-base> && git commit` to collapse
+  the feature into one commit, then `rebase --onto origin/main <your-base>`.
+  Now each conflicted file is resolved EXACTLY ONCE to its final state, instead
+  of re-resolving the same file across an add-commit then a later edit-commit.
+Two resolution heuristics that saved time: (a) when an incoming commit only
+DELETED code that main already lacks (e.g. reverting a feature main never had),
+take `--ours` (main's version) wholesale — the deletion is already done; (b)
+when main and the branch added INDEPENDENT blocks at the same spot (an
+"adjacency conflict" — two new k8s secrets, two new tf variables, two new env
+entries), don't hand-splice the interleaved markers: take `--ours` (main) for
+the whole file, then re-insert your additive blocks against known anchors. The
+result is provably main + your delta, with no merge-mangled hybrids. Verify the
+end state with `terraform fmt -check` / `ruff` / a YAML parse, not just absence
+of `<<<<<<<` markers.
