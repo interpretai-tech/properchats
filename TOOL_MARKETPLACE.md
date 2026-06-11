@@ -1000,3 +1000,18 @@ ANSWERING with Gemini models (gate a Gemini-model fallback on "no usable
 Anthropic key", an API-key-only change), vs. keeping Claude quality on Google's
 dime (Vertex + ADC + per-tier @-version ids + region, an infra change). They
 are not substitutable.
+
+### 2026-06-11 — Correction (validated live): current Vertex accepts the BARE Claude id, and `location=global` is the no-quota-fuss default
+Walking back the "@-version map" caveat in the note above — tested against a
+real project: `POST .../locations/global/publishers/anthropic/models/claude-opus-4-8:rawPredict`
+with an ADC token returned **HTTP 200**. So (a) the **unversioned** model id is
+accepted (no `@date` lookup table needed — pass the id straight through), and
+(b) the **`global` location** serves the newest Opus immediately, while pinned
+regions are spottier: in the same test `us-east5` returned 429 (model enabled
+but ~0 quota), `us-central1` "not servable", `us-west1` 404. Note `global`'s
+host is the un-prefixed `aiplatform.googleapis.com` (NOT `global-aiplatform…`).
+Practical guidance: default the integration to `region=global` + bare id; only
+pin a region (and file a quota-increase) when latency or data-residency demands
+it. Fastest possible test loop — no pod, no IaC: mint a token in-process
+(`google.auth.default(scopes=[cloud-platform]).refresh()`) and `curl`/urllib the
+rawPredict URL; 200 vs 404/400 instantly tells you availability + id format.
