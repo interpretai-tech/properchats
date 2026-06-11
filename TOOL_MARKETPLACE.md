@@ -935,3 +935,21 @@ case latency exceeds a few seconds should declare an async/poll mode rather
 than assume the request-scoped tool-call budget; the in-chat `tool_ui`/poll
 client is the rendering half. (Mirrors the ProperChats one_agent durability
 work: server-persisted run trace + a session-gated poll endpoint.)
+
+### 2026-06-11 — Decision: dual-transport migration (sync stream → async job) needs a client that accepts both
+When a long-running tool moves from a synchronous held-open stream to the
+durable queue+poll model, the client and server don't deploy atomically — the
+backend may still stream synchronously in prod while the new async path ships
+behind it. The robust pattern is a client that branches on the TRANSPORT it
+actually observes, not on a version flag: if the first server event is a
+`job` handle, drive the poll loop; otherwise consume the stream as before.
+Both paths write the SAME durable run record / resume key, so refresh-resume
+and rendering are identical regardless of transport. The server-side opt-in is
+a dedicated MARKER token (here: an explicit `one_agent` durable-execution
+token sent alongside the capability tokens that still drive tool assembly) —
+gating the reroute on a marker rather than inferring it from the toolset keeps
+ordinary turns on the synchronous path and makes the async opt-in explicit and
+auditable. The marker must be made metering-safe (excluded from billable-tool
+counting/strip seams) so adding it doesn't perturb usage accounting. Net: no
+flag day, no lost traces across the cutover, and a clean rollback (stop
+sending the marker → everything falls back to the stream path).
