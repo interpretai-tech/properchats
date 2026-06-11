@@ -332,3 +332,18 @@ binding's CI must include a *shape* test against recorded vendor responses
 prose leaking to the UI is itself a review-blocking defect, because vendor
 errors change under your feet. Both now enforced privately; recipe docs
 should carry them into CONTRIBUTING_TOOLS.md when M2 lands.
+
+### 2026-06-11 — Critic cadence: review-per-feature, then sweep-per-wave
+
+Process decision worth encoding for marketplace contributions: today's
+wave ran TWO distinct critic passes and each caught things the other
+couldn't. Per-feature adversarial critics (launched the moment a feature
+landed) found design-level holes — a fail-open admin gate, quota
+amplification through an agent's tool union, a health cache that was
+silently inert in prod. The end-of-wave sweep (full Playwright suite +
+simplification pass over only the new diff) found what per-feature review
+can't see: cross-feature collisions, vendor-recovery unmaskings, and dead
+weight left by the fixes themselves. Marketplace mapping: PR review of a
+contributed binding = the per-feature pass; the nightly catalog-wide
+suite over TOOLS.md entries = the sweep. Neither substitutes for the
+other.
