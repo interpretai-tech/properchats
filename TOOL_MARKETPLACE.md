@@ -896,3 +896,21 @@ FAL_KEY. Live verification is a deploy-time TODO; the live bridge spec
 runs skip-unless-configured. Deferred: more models in the allowlist
 (needs per-addition pricing review), image_size/seed args, the queue
 path for slow models, and a "remix" affordance on the chip.
+
+### 2026-06-11 — fal.ai image_gen adversarial critic: CLEAN
+Independent read-only critic ran every requested attack against 6628ecd and
+found NO blocker / no should-fix. Verified concretely: SSRF host-pin rejects
+`@`-userinfo (both placements), IDN/punycode, IP-literals (incl.
+169.254.169.254), trailing-dot, protocol-relative, http, and `?x=fal.media`
+query smuggling — only real `fal.media`/`*.fal.media` over https passes, and
+the CDN fallback fetch carries NO Authorization header (key never replayed);
+model allowlist refuses path-traversal / url-encoded / leading-slash ids
+BEFORE key resolution and before any fetch; image sanitizer blocks
+svg/gif/html, uppercase-mime, newline-smuggle, and padding tricks, and the
+no-kind grandfather path stays audio-only; budget converges on the single
+`invokeTool` seam (no bridge-vs-chat bypass, matching the social_post fix);
+FAL_KEY never logged/echoed/returned. Tests assert the load-bearing
+properties (would fail if a guard were removed). Two NITs, both argued as
+by-design non-holes (bridge returns raw `_ui` to the same trusted caller; the
+chat UI only renders sanitized `tool_ui` stream events). Regex is linear — no
+ReDoS (4M chars in 24ms, length cap precedes the match).
