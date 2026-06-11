@@ -19,6 +19,7 @@ import { rateLimit } from "@/lib/server/rateLimit";
 import { TOOL_NAME_SEP, ToolError, type ToolManifest } from "./manifest";
 import { calculate } from "./bindings/calculator";
 import { listVoices, textToSpeech } from "./bindings/elevenlabs";
+import { generateImage } from "./bindings/fal";
 import { stockQuote } from "./bindings/finance";
 import { scrapeUrl, searchWeb } from "./bindings/firecrawl";
 import { createPost, listChannels } from "./bindings/postiz";
@@ -362,6 +363,65 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     pricing: "byok",
     maintainer: "ilianherzi",
   },
+
+  {
+    id: "image_gen",
+    display: {
+      label: "Image generation",
+      hint:
+        "Generate images from text via fal.ai (BYOK — usage-billed, no free tier: " +
+        "FLUX schnell ≈ $0.003/megapixel ≈ $0.003/image at default size; FLUX dev $0.025/image)",
+      icon: "ImagePlus",
+    },
+    description:
+      "generate_image creates ONE image from a text prompt (max 2,000 " +
+      "characters) via fal.ai and returns image METADATA only (model, width, " +
+      "height, seed, bytes) — the image itself is delivered to the user's " +
+      "interface, never into this conversation, so never ask for or try to " +
+      "repeat the image data. Use it when the user asks to generate, draw, " +
+      "render, or visualize a picture from a description. Only two models " +
+      'are enabled: "fal-ai/flux/schnell" (default — fast, cheapest) and ' +
+      '"fal-ai/flux/dev" (higher quality, ~8x the price); other model ids ' +
+      "are refused.",
+    binding: {
+      kind: "webhook",
+      endpoint: "/api/tools/image_gen",
+      functions: [
+        {
+          name: "generate_image",
+          description:
+            "Generate one image (image/png) from a text prompt; returns image metadata, not image data.",
+          parameters: {
+            type: "object",
+            properties: {
+              prompt: {
+                type: "string",
+                description:
+                  "What to draw, up to 2,000 characters. Front-load the subject and style.",
+              },
+              model: {
+                type: "string",
+                enum: ["fal-ai/flux/schnell", "fal-ai/flux/dev"],
+                description:
+                  'fal.ai model id (default "fal-ai/flux/schnell"). Only the listed ids are allowed; use "fal-ai/flux/dev" when the user asks for higher quality.',
+              },
+            },
+            required: ["prompt"],
+          },
+        },
+      ],
+    },
+    providers: ["anthropic", "openai", "gemini"],
+    auth: { requiresSignIn: false, secrets: ["FAL_KEY"] },
+    // category "media" → the generic BYOK hourly budget (60/h), like tts:
+    // generation is read-only spend on the deployer's key (cents/image,
+    // ~$1.50/h worst case on flux/dev), not shared external authority — the
+    // tighter social 15/h budget exists for tools acting on real accounts.
+    policy: { allowance: UNMETERED, meterMode: "per-turn" },
+    category: "media",
+    pricing: "byok",
+    maintainer: "ilianherzi",
+  },
 ];
 
 /**
@@ -403,6 +463,7 @@ const HANDLERS: Record<string, Record<string, ToolHandler>> = {
   web_scrape: { scrape_url: scrapeUrl, search_web: searchWeb },
   tts: { text_to_speech: textToSpeech, list_voices: listVoices },
   social_post: { list_channels: listChannels, create_post: createPost },
+  image_gen: { generate_image: generateImage },
 };
 
 /**

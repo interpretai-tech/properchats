@@ -830,3 +830,69 @@ rejected with zero fetches; no-key forced create_post → normalized
 `{ error }`, zero fetches; budget exhaustion at the seam (zero vendor
 calls) and mid-chat-loop (loop continues to a clean done); disabled
 channel unlisted and unpostable; social default 15/h vs BYOK 60/h.
+
+### 2026-06-11 — Shipped: fal.ai `image_gen` binding + the `image` _ui kind, end-to-end
+
+The shortlist's fal.ai slot lands as `image_gen` (`generate_image
+{prompt, model?}` — `src/lib/tools/bindings/fal.ts`), and with it the
+second `_ui` kind: **images are now delivered in-chat alongside audio**
+(binding `_ui` → server whitelist → `tool_ui` SSE → bounded `<img>` chip
+in MessageItem; session-only, same persist-time strip as audio).
+
+**Auth/endpoint findings (docs-fetched 2026-06; WebFetch only — search
+is org-blocked):** env var is `FAL_KEY` (fal's documented name), header
+is exactly `Authorization: Key $FAL_KEY`. Simplest REST path for a fast
+model: the synchronous host — `POST https://fal.run/{model_id}` with the
+flat input JSON; result returns on the same connection ("no queue and no
+status polling" — fal.ai/docs/documentation/model-apis/inference/
+synchronous.md). The queue host (`queue.fal.run`, submit → status →
+response GETs) exists for long jobs and is deliberately not used.
+Sources: fal.ai/docs/model-apis/quickstart, …/inference/queue.md +
+synchronous.md, fal.ai/models/fal-ai/flux/schnell(/api).
+
+**Bytes-vs-URL design:** we send `sync_mode: true` (documented on the
+flux schnell schema: media returns as a data URI, not stored in request
+history), so the happy path needs no second fetch. If fal returns a
+hosted URL anyway, the bytes are fetched server-side ONLY from fal's own
+result CDN — https + `fal.media` (or a `.fal.media` subdomain; their
+docs' example output host), pinned in `isAllowedResultUrl`. Any other
+host in the vendor response is refused with ZERO further fetches
+(spec-pinned, including the `fal.media.evil.com` suffix spoof), and the
+CDN fetch never carries the API key. That's the SSRF stance: a vendor
+response is attacker-influencable input; this binding is not a proxy.
+
+**Model allowlist, never free-form:** `model` accepts exactly
+`fal-ai/flux/schnell` (default — ~$0.003/megapixel ≈ $0.003/image at the
+default 1024×768) or `fal-ai/flux/dev` ($0.025/image, the only price
+fal's pricing doc quotes exactly); anything else — including plausible
+fal ids like video models that bill per *second* — is a 400 before any
+fetch. A free-form model arg on a BYOK key is an open proxy to
+arbitrary-priced models. Pricing reality lives in `display.hint`.
+
+**The image `_ui` kind (the platform half):** `sanitizeToolUiPayload`
+now accepts `{kind:"image", dataUrl}` against an anchored
+`^data:image/(png|jpeg|webp);base64,…$` regex under the same 4.2 M-char
+cap (the binding's own output cap is test-pinned equal to it). `kind` is
+REQUIRED for images; the no-kind grandfather path stays audio-only.
+**SVG is deliberately excluded and spec-pinned out:** `image/svg+xml` is
+a scriptable document format (`<script>`, event handlers,
+`foreignObject`) — rendering vendor bytes as SVG in the chat DOM is XSS,
+not an image; gif is excluded as merely-unneeded. The client image chip
+is a plain CSS-bounded `<img>` (max 420px, registry-resolved tool id as
+label/alt, zero payload-driven attributes/handlers — spec asserts no
+`on*` attributes). CONTRIBUTING_TOOLS.md's binary-output paragraph now
+documents both in-chat kinds.
+
+**Budget choice:** `image_gen` stays `category: "media"` on the generic
+60/h BYOK budget (like tts), not the social-style 15/h: generation is
+read-only spend on the deployer's key with no shared external authority,
+and the worst case is ~$1.50/h (60 × flux/dev) — cost containment, not
+blast-radius containment. Spec-pinned via `byokToolHourlyLimit`.
+
+**Fixture caveat (provenance, honestly):** the recorded response shapes
+in tests/fal-image.spec.ts are DOCS-DERIVED (the flux schnell output
+schema + the queue/quickstart pages), not live-recorded — we hold no
+FAL_KEY. Live verification is a deploy-time TODO; the live bridge spec
+runs skip-unless-configured. Deferred: more models in the allowlist
+(needs per-addition pricing review), image_size/seed args, the queue
+path for slow models, and a "remix" affordance on the chip.

@@ -421,10 +421,12 @@ export function MessageItem({
               ))}
             </div>
           )}
-          {/* UI-only tool payloads (tool_ui events): an audio chip per clip.
-              Server-whitelisted (audio data: URLs only), labeled with the
-              registry-resolved tool id, never autoplayed. Session-only: data:
-              payloads are stripped at persist time like inline images. */}
+          {/* UI-only tool payloads (tool_ui events): an audio or image chip
+              per payload. Server-whitelisted (audio/image data: URLs only —
+              sanitizeToolUiPayload), labeled with the registry-resolved tool
+              id, never autoplayed, no handlers from payload data. Session-
+              only: data: payloads are stripped at persist time like inline
+              images. */}
           {message.toolUi && message.toolUi.length > 0 && (
             <div className="mt-3 flex flex-col gap-2">
               {message.toolUi.map((u, i) =>
@@ -439,6 +441,23 @@ export function MessageItem({
                       {u.tool} audio
                     </span>
                     <audio controls preload="metadata" src={u.payload.dataUrl} className="w-full" />
+                  </div>
+                ) : u.payload.kind === "image" ? (
+                  <div
+                    key={i}
+                    data-testid="tool-image"
+                    className="flex max-w-[420px] flex-col gap-1.5 rounded-lg border border-line bg-surface px-3 py-2"
+                  >
+                    <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
+                      <ImageIcon size={12} className="text-accent" />
+                      {u.tool} image
+                    </span>
+                    {/* eslint-disable-next-line @next/next/no-img-element -- bounded data: URL, not an optimizable asset */}
+                    <img
+                      src={u.payload.dataUrl}
+                      alt={`${u.tool} image`}
+                      className="max-h-[420px] max-w-full rounded-md border border-line object-contain"
+                    />
                   </div>
                 ) : null,
               )}

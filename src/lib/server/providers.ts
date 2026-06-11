@@ -319,13 +319,25 @@ type ToolBudget = ReturnType<typeof createToolBudget>;
 // put ANYTHING under `_ui`, and the client renders the payload verbatim.
 
 /**
- * v1 whitelist: a base64 `data:` URL for the three audio mimes we render.
+ * Whitelisted dataUrl forms: a base64 `data:` URL for the three audio mimes
+ * (and, below, the three bitmap-image mimes) we render.
  * Strict base64 form: payload chars only, with `=` padding (max 2) allowed
  * only at the very end. `$` in JS matches end-of-input only (no `m` flag), so
  * an embedded newline — e.g. `…AAAA\n<script>` — can never smuggle a suffix.
  */
 export const TOOL_UI_AUDIO_DATAURL_RE =
   /^data:audio\/(mpeg|wav|ogg);base64,[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * Bitmap-image counterpart (same strict base64 anchors). The mime whitelist
+ * is png/jpeg/webp ONLY — image/svg+xml is DELIBERATELY excluded and must
+ * never be added: SVG is a scriptable document format (<script>, event
+ * handlers, foreignObject), so rendering a vendor-supplied SVG in the chat
+ * DOM would be an XSS hole, not an image. gif is excluded as out of scope
+ * (no binding produces it; grow the list deliberately, not speculatively).
+ */
+export const TOOL_UI_IMAGE_DATAURL_RE =
+  /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]*={0,2}$/;
 
 /**
  * Max accepted `dataUrl` length, in characters. Sized to the worst-case clip
@@ -337,22 +349,26 @@ export const TOOL_UI_AUDIO_DATAURL_RE =
 export const TOOL_UI_MAX_DATAURL_CHARS = 4_200_000;
 
 /**
- * Validate a raw `_ui` payload into the one shape v1 streams to the client:
- * `{ kind: "audio", dataUrl }` with an audio/(mpeg|wav|ogg) base64 data URL
- * of bounded size. An explicit `kind` other than "audio", a non-audio or
+ * Validate a raw `_ui` payload into the shapes streamed to the client:
+ * `{ kind: "audio", dataUrl }` with an audio/(mpeg|wav|ogg) base64 data URL,
+ * or `{ kind: "image", dataUrl }` with an image/(png|jpeg|webp) one — both
+ * of bounded size. `kind` may be omitted for audio only (the original
+ * elevenlabs `_ui` shape predates the field); image payloads must declare
+ * `kind: "image"` explicitly. Any other kind, a mime/kind mismatch, a
  * malformed dataUrl, or an oversized payload returns null — the caller drops
  * it with a console.warn and the stream continues (never an error event).
  */
 export function sanitizeToolUiPayload(raw: unknown): ToolUiPayload | null {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const { kind, dataUrl } = raw as { kind?: unknown; dataUrl?: unknown };
-    if (
-      (kind === undefined || kind === "audio") &&
-      typeof dataUrl === "string" &&
-      dataUrl.length <= TOOL_UI_MAX_DATAURL_CHARS &&
-      TOOL_UI_AUDIO_DATAURL_RE.test(dataUrl)
-    ) {
+    if (typeof dataUrl !== "string" || dataUrl.length > TOOL_UI_MAX_DATAURL_CHARS) {
+      return null;
+    }
+    if ((kind === undefined || kind === "audio") && TOOL_UI_AUDIO_DATAURL_RE.test(dataUrl)) {
       return { kind: "audio", dataUrl };
+    }
+    if (kind === "image" && TOOL_UI_IMAGE_DATAURL_RE.test(dataUrl)) {
+      return { kind: "image", dataUrl };
     }
   }
   return null;
@@ -387,7 +403,7 @@ async function* runBudgetedToolCall(
       yield { type: "tool_ui", tool: parsed.toolId, fn: parsed.fn, payload };
     } else {
       console.warn(
-        `[tool_ui] dropped unsupported _ui payload from ${parsed ? `${parsed.toolId}.${parsed.fn}` : "unknown tool"} (v1 accepts {kind:"audio", dataUrl: data:audio/(mpeg|wav|ogg);base64,…} ≤ ${TOOL_UI_MAX_DATAURL_CHARS} chars)`,
+        `[tool_ui] dropped unsupported _ui payload from ${parsed ? `${parsed.toolId}.${parsed.fn}` : "unknown tool"} (accepted: {kind:"audio", dataUrl: data:audio/(mpeg|wav|ogg);base64,…} or {kind:"image", dataUrl: data:image/(png|jpeg|webp);base64,…}, each ≤ ${TOOL_UI_MAX_DATAURL_CHARS} chars)`,
       );
     }
   }

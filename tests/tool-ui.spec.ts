@@ -20,18 +20,25 @@ import type { StreamEvent } from "../src/lib/types";
  *   with registry-resolved names, alongside the existing status/trace events;
  * - the tool_result fed back to the model contains NO dataUrl / base64 audio;
  * - whitelist: ONLY {kind:"audio", dataUrl: data:audio/(mpeg|wav|ogg);base64,…}
- *   of bounded size; anything else (wrong mime/kind, junk chars, oversize) is
- *   DROPPED silently — no tool_ui event, no error event, stream completes;
+ *   or {kind:"image", dataUrl: data:image/(png|jpeg|webp);base64,…} of bounded
+ *   size; anything else (wrong mime/kind — notably image/svg+xml, which is
+ *   scriptable — junk chars, oversize) is DROPPED silently — no tool_ui
+ *   event, no error event, stream completes;
  * - UI: the audio chip renders a native <audio controls> with the dataUrl and
- *   a "{tool} audio" label; no autoplay (mocked /api/chat, fully offline).
+ *   a "{tool} audio" label; no autoplay; the image chip renders a CSS-bounded
+ *   <img> with registry-owned alt text and no payload-driven handlers
+ *   (mocked /api/chat, fully offline).
  */
 
 const realFetch = globalThis.fetch;
 const realKey = process.env.ELEVENLABS_API_KEY;
+const realFalKey = process.env.FAL_KEY;
 test.afterEach(() => {
   globalThis.fetch = realFetch;
   if (realKey === undefined) delete process.env.ELEVENLABS_API_KEY;
   else process.env.ELEVENLABS_API_KEY = realKey;
+  if (realFalKey === undefined) delete process.env.FAL_KEY;
+  else process.env.FAL_KEY = realFalKey;
 });
 
 // ── Recorded shapes ─────────────────────────────────────────────────────────
@@ -43,6 +50,14 @@ const RECORDED_AUDIO = new Uint8Array([
 ]);
 const AUDIO_B64 = Buffer.from(RECORDED_AUDIO).toString("base64");
 const AUDIO_DATAURL = `data:audio/mpeg;base64,${AUDIO_B64}`;
+
+/** Tiny stand-in png body (PNG signature + padding). */
+const RECORDED_PNG = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+]);
+const PNG_B64 = Buffer.from(RECORDED_PNG).toString("base64");
+const PNG_DATAURL = `data:image/png;base64,${PNG_B64}`;
 
 function sseResponse(events: unknown[]): Response {
   const body = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
@@ -207,6 +222,62 @@ test("an oversized _ui payload is dropped: no tool_ui, no error, stream complete
   expect(events.some((e) => e.type === "done")).toBe(true);
 });
 
+// ── Loop: _ui image (fal.ai) → one tool_ui event, kind "image" ──────────────
+
+test("a tool result carrying _ui image emits ONE tool_ui event; the model-visible tool_result has no dataUrl", async () => {
+  process.env.FAL_KEY = "fal-test-not-a-real-key";
+  // fal sync_mode shape: the generated image arrives as a data URI.
+  const falResult = {
+    images: [{ url: PNG_DATAURL, width: 1024, height: 768, content_type: "image/png" }],
+    seed: 7,
+    has_nsfw_concepts: [false],
+    prompt: "a red cube",
+  };
+  const seen: SeenRequest[] = [];
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith("https://fal.run/")) {
+      return new Response(JSON.stringify(falResult), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    seen.push({ url: u, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+    const rounds = [
+      openaiToolRound([
+        {
+          id: "c1",
+          name: "image_gen__generate_image",
+          args: JSON.stringify({ prompt: "a red cube" }),
+        },
+      ]),
+      openaiTextRound("Drawn."),
+    ];
+    return sseResponse(rounds[Math.min(seen.length - 1, rounds.length - 1)]);
+  }) as typeof fetch;
+
+  const events = await collect(makeInput());
+
+  const uiEvents = events.filter((e) => e.type === "tool_ui");
+  expect(uiEvents).toHaveLength(1);
+  const ui = uiEvents[0] as Extract<StreamEvent, { type: "tool_ui" }>;
+  expect(ui.tool).toBe("image_gen");
+  expect(ui.fn).toBe("generate_image");
+  expect(ui.payload).toEqual({ kind: "image", dataUrl: PNG_DATAURL });
+
+  // The tool_result fed back to the model: metadata only, zero image bytes.
+  expect(seen).toHaveLength(2);
+  const toolMsg = (seen[1].body.messages as { role: string; content?: string }[]).find(
+    (m) => m.role === "tool",
+  );
+  expect(toolMsg?.content).toContain("image/png"); // metadata survives
+  expect(toolMsg?.content).not.toContain("dataUrl");
+  expect(toolMsg?.content).not.toContain(PNG_B64);
+
+  expect(events.some((e) => e.type === "delta" && e.text === "Drawn.")).toBe(true);
+  expect(events.some((e) => e.type === "done")).toBe(true);
+});
+
 // ── Whitelist unit pins (the exact v1 rules) ────────────────────────────────
 
 test("sanitizeToolUiPayload: v1 accepts only bounded base64 audio data URLs", () => {
@@ -218,8 +289,8 @@ test("sanitizeToolUiPayload: v1 accepts only bounded base64 audio data URLs", ()
   expect(sanitizeToolUiPayload({ dataUrl: `data:audio/wav;base64,${AUDIO_B64}` })).not.toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: `data:audio/ogg;base64,${AUDIO_B64}` })).not.toBeNull();
 
-  // Dropped: unknown kind, non-audio mime, non-base64 data URL, junk chars,
-  // non-object payloads, missing dataUrl.
+  // Dropped: kind/mime mismatch, non-audio mime, non-base64 data URL, junk
+  // chars, non-object payloads, missing dataUrl.
   expect(sanitizeToolUiPayload({ kind: "image", dataUrl: AUDIO_DATAURL })).toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: `data:video/mp4;base64,${AUDIO_B64}` })).toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: `data:text/html;base64,${AUDIO_B64}` })).toBeNull();
@@ -244,6 +315,50 @@ test("sanitizeToolUiPayload: v1 accepts only bounded base64 audio data URLs", ()
   const atCap = prefix + "A".repeat(TOOL_UI_MAX_DATAURL_CHARS - prefix.length);
   expect(sanitizeToolUiPayload({ dataUrl: atCap })).not.toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: atCap + "A" })).toBeNull();
+});
+
+test("sanitizeToolUiPayload: image kind accepts only bounded base64 png/jpeg/webp — SVG is pinned OUT", () => {
+  // Accepted: explicit kind "image" + the three bitmap mimes.
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: PNG_DATAURL })).toEqual({
+    kind: "image",
+    dataUrl: PNG_DATAURL,
+  });
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: `data:image/jpeg;base64,${PNG_B64}` }))
+    .not.toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: `data:image/webp;base64,${PNG_B64}` }))
+    .not.toBeNull();
+
+  // XSS pin: image/svg+xml is a scriptable document format and MUST never
+  // pass — this expectation is the regression tripwire for that exclusion.
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: `data:image/svg+xml;base64,${PNG_B64}` }))
+    .toBeNull();
+  // Other non-bitmap/non-whitelisted mimes are out too.
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: `data:image/gif;base64,${PNG_B64}` }))
+    .toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: `data:text/html;base64,${PNG_B64}` }))
+    .toBeNull();
+
+  // kind is REQUIRED for image: an undeclared-kind image dataUrl is dropped
+  // (the no-kind grandfather path is audio-only), and kind/mime cross-pairs
+  // fail both ways.
+  expect(sanitizeToolUiPayload({ dataUrl: PNG_DATAURL })).toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "audio", dataUrl: PNG_DATAURL })).toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: AUDIO_DATAURL })).toBeNull();
+
+  // Same strict base64 anchors as audio: no newline smuggling, no mid-string
+  // padding, no plain URLs.
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: "data:image/png;base64,AAAA\n<script>" }))
+    .toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: 'data:image/png;base64,abc"<img>' }))
+    .toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: "https://fal.media/files/x.png" }))
+    .toBeNull();
+
+  // Oversize: one char past the shared cap is dropped; at the cap passes.
+  const prefix = "data:image/png;base64,";
+  const atCap = prefix + "A".repeat(TOOL_UI_MAX_DATAURL_CHARS - prefix.length);
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: atCap })).not.toBeNull();
+  expect(sanitizeToolUiPayload({ kind: "image", dataUrl: atCap + "A" })).toBeNull();
 });
 
 // ── Client store: append-time bounds on a message's clips ──────────────────
@@ -315,4 +430,52 @@ test("tool_ui audio renders an <audio controls> chip with the dataUrl, no autopl
   await expect(audio).not.toHaveAttribute("autoplay", /.*/);
   // The clip is attached to the message, not floating UI: the reply text rendered too.
   await expect(page.getByTestId("chat-pane")).toContainText("press play");
+});
+
+test("tool_ui image renders a bounded <img> chip with the dataUrl and NO payload-driven handlers", async ({
+  page,
+}) => {
+  const sse = (events: unknown[]) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+  await page.addInitScript(() => localStorage.clear());
+  await page.route("**/api/config", (r) =>
+    r.fulfill({ json: { interpret: true, anthropic: true, openai: true, gemini: true } }),
+  );
+  await page.route("**/api/model-window", (r) => r.fulfill({ json: { window: 1_000_000 } }));
+  await page.route("**/api/chat", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" },
+      body: sse([
+        { type: "start", provider: "openai", route: "direct", model: "test-model" },
+        { type: "status", text: "Running Image generation (generate_image)…" },
+        { type: "tool_ui", tool: "image_gen", fn: "generate_image", payload: { kind: "image", dataUrl: PNG_DATAURL } },
+        { type: "trace", text: "Used Image generation (generate_image)" },
+        { type: "delta", text: "Here is your image." },
+        { type: "done", usage: { input: 10, output: 5 }, stopReason: "stop" },
+      ]),
+    }),
+  );
+  await page.goto("/");
+  await expect(composer(page)).toBeVisible({ timeout: 45_000 });
+
+  await composer(page).getByTestId("composer-input").fill("Draw a red cube.");
+  await composer(page).getByTestId("send-button").click();
+
+  const chip = page.getByTestId("tool-image");
+  await expect(chip).toBeVisible();
+  await expect(chip).toContainText("image_gen image");
+  const img = chip.locator("img");
+  await expect(img).toHaveAttribute("src", PNG_DATAURL);
+  // Alt text is registry-owned (tool id), never payload-derived prose.
+  await expect(img).toHaveAttribute("alt", "image_gen image");
+  // CSS-bounded render: the image cannot blow out the chat column.
+  await expect(img).toHaveClass(/max-h-\[420px\]/);
+  await expect(img).toHaveClass(/max-w-full/);
+  // No event handlers sourced from the payload: the element carries none.
+  const handlerAttrs = await img.evaluate((el) =>
+    el.getAttributeNames().filter((n) => n.toLowerCase().startsWith("on")),
+  );
+  expect(handlerAttrs).toEqual([]);
+  // The reply text rendered alongside the chip.
+  await expect(page.getByTestId("chat-pane")).toContainText("Here is your image.");
 });

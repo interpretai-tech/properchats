@@ -78,7 +78,7 @@ export function highlightMatchesText(text: string, highlight: string): boolean {
 // long multi-call turn could still pile clips into one message unboundedly,
 // so appends are capped at the message level too.
 
-/** Max audio clips kept per message. */
+/** Max tool_ui payloads (audio clips / images) kept per message. */
 export const TOOL_UI_MAX_CLIPS_PER_MESSAGE = 4;
 /**
  * Max combined dataUrl chars kept per message: two worst-case clips

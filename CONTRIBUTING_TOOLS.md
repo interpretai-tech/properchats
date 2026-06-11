@@ -63,13 +63,20 @@ API). All in `src/lib/tools/bindings/`.
 
   **In-chat delivery**: when the model calls your tool from the chat loop,
   payloads under `_ui` that pass the server whitelist are streamed to the
-  client as `tool_ui` SSE events and rendered by kind — currently audio only.
-  The whitelist (`sanitizeToolUiPayload`, `src/lib/server/providers.ts`)
-  accepts `{ kind?: "audio", dataUrl }` where `dataUrl` is a base64
-  `data:audio/(mpeg|wav|ogg)` URL within the ~2 MB cap; the `elevenlabs.ts`
-  `_ui` shape passes as-is (no explicit `kind` needed). Anything else is
-  dropped server-side with a `console.warn` — never a stream error — and your
-  tool degrades to bridge-only delivery.
+  client as `tool_ui` SSE events and rendered by kind — audio AND image are
+  delivered in-chat today. The whitelist (`sanitizeToolUiPayload`,
+  `src/lib/server/providers.ts`) accepts `{ kind?: "audio", dataUrl }` where
+  `dataUrl` is a base64 `data:audio/(mpeg|wav|ogg)` URL, or
+  `{ kind: "image", dataUrl }` with a base64 `data:image/(png|jpeg|webp)`
+  URL — each within the ~3 MB (4.2 M chars) cap. The `elevenlabs.ts` `_ui`
+  shape passes as-is (no explicit `kind` needed — audio is the historical
+  default); image payloads must declare `kind: "image"` (`fal.ts` is the
+  template). `image/svg+xml` is DELIBERATELY excluded from the image
+  whitelist and must stay excluded: SVG is a scriptable document format
+  (`<script>`, event handlers), so rendering vendor bytes as SVG in the chat
+  DOM would be XSS, not an image. Anything else is dropped server-side with
+  a `console.warn` — never a stream error — and your tool degrades to
+  bridge-only delivery.
 
 ## 1. Write the binding — `src/lib/tools/bindings/<vendor>.ts`
 

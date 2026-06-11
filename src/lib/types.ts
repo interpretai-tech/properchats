@@ -30,12 +30,14 @@ export interface Source {
 
 /**
  * A whitelisted UI-only tool payload streamed to the chat client as a
- * `tool_ui` event. v1 supports audio only: `dataUrl` is a validated
- * `data:audio/(mpeg|wav|ogg);base64,…` URL (see `sanitizeToolUiPayload` in
- * `server/providers.ts` — anything else is dropped server-side, never sent).
+ * `tool_ui` event. Two kinds: `dataUrl` is a validated
+ * `data:audio/(mpeg|wav|ogg);base64,…` URL for "audio", or a validated
+ * `data:image/(png|jpeg|webp);base64,…` URL for "image" — SVG is deliberately
+ * excluded (scriptable, XSS). See `sanitizeToolUiPayload` in
+ * `server/providers.ts` — anything else is dropped server-side, never sent.
  */
 export interface ToolUiPayload {
-  kind: "audio";
+  kind: "audio" | "image";
   dataUrl: string;
 }
 
