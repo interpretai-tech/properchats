@@ -1067,3 +1067,27 @@ the whole file, then re-insert your additive blocks against known anchors. The
 result is provably main + your delta, with no merge-mangled hybrids. Verify the
 end state with `terraform fmt -check` / `ruff` / a YAML parse, not just absence
 of `<<<<<<<` markers.
+
+### 2026-06-11 — Workflow: stacked PRs — base the child on the parent's BRANCH, and rebase the child with `--onto`
+When feature B logically merges after feature A (A is the "foundation"), don't
+open both against `main` and eyeball-separate the diffs. Stack them:
+- **Open B's PR with `--base <A's head branch>`** (not main). GitHub then shows
+  ONLY B's diff (A's changes are the base), and the moment A merges it
+  **auto-retargets B to `main`** — no manual rebase at merge time.
+- Keep the branches honest with two rebases, in order: (1) rebase the parent
+  onto current main and force-push (updates A's PR); (2) rebase the child onto
+  the parent with `git rebase --onto <parent-branch> <old-base> <child>` so the
+  child is literally `parent + child-commits`. Using `--onto` with the OLD base
+  as the cut point replays only the child's own commits — not the parent's,
+  which would otherwise double-apply and conflict.
+Conflict heuristics that recur when rebasing the foundation onto a moved main:
+(a) **adjacency union** — main and the branch each appended an INDEPENDENT block
+at the same spot (a new telemetry call vs a new reroute; a new match-case vs a
+new one): keep both. (b) **adopt-the-refactor** — if main changed the
+surrounding PATTERN (e.g. a dispatch switch moved from inline calls to a
+`handler = X` assignment), port your new case into main's new pattern rather
+than re-adding the old style; you often inherit a bonus (here the new case
+picked up main's tracing wrapper for free). Always validate the result against a
+main BASELINE, not just "no \`<<<<<<<\` left": diff the linter error COUNT
+before/after (merge should add zero) and confirm no error lands inside your
+edited line ranges.
