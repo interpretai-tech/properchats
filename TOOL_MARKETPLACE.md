@@ -255,3 +255,22 @@ firecrawl.dev/pricing, exa.ai/pricing, shovels.ai, fal.ai/pricing,
 elevenlabs.io/pricing/api, cal.com/docs/api-reference/v2, documenso.com/pricing,
 postiz.com, lob.com/pricing, tavus.io/pricing, vapi.ai/pricing,
 rentcast.io/api, browserbase.com/pricing, docs.stripe.com/agentic-commerce.
+
+### 2026-06-11 — The One Agent: the marketplace's universal consumer
+
+Decision (from the private build, recorded here because it sets the
+marketplace's north star): ProperChat is gaining **"The One Agent"** — a
+selectable capability wired to the unified agent loop that attaches the
+*entire* toolset (web search, deep research, document tools, vertical
+toolsets) and reasons in-thread until it decides it's done, handling tool
+failures and retries itself.
+
+Why this matters for the marketplace: every manifest registered through the
+M1 recipe should be *automatically* in The One Agent's toolset — no
+per-tool UI, no per-tool capability entry. That makes `manifestToToolDefs()`
+(M2) the single integration point: a contributor ships one binding file and
+their tool is immediately usable both as a standalone capability *and* by
+the flagship agent. Design rule going forward: **a manifest that needs
+special-casing inside the agent loop is a malformed manifest** — failure
+handling, auth (BYOK), and output sizing must live in the binding, because
+the One Agent will call tools unattended.
