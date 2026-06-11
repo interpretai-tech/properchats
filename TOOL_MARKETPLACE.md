@@ -745,3 +745,41 @@ schedule-only v1 (require scheduleAt ≥ N min out, cancellable in the
 Postiz UI) vs allowing "now"; (3) bridge-budget story for self-hosters
 raising API_LIMIT; (4) normalize the vendor's delete-500 bug if
 delete_post is ever added.
+
+### 2026-06-11 — Shipped: social_post (Postiz) — the catalog's first public-side-effect tool, schedule-only v1
+
+Built per the bake-off verdict above: `src/lib/tools/bindings/postiz.ts`
+(+ registry entry, + `tests/postiz-social.spec.ts`, 18 specs). Two
+functions: `list_channels` (GET /public/v1/integrations, trimmed to
+{id, platform, name} ≤ 50 rows) and `create_post` (POST /public/v1/posts,
+text ≤ 5,000 chars to 1-5 channels). Auth verified from
+docs.postiz.com/public-api: raw key in `Authorization` — NO Bearer
+prefix. Self-host door honored (POSTIZ_BASE_URL || api.postiz.com).
+
+**Schedule-only rationale (owner blocker (2), resolved conservatively):**
+a hallucinated create_post publishes to real accounts, so v1 has NO
+"post now" path — `scheduleAt` is required, must parse as ISO, and must
+be ≥ 10 minutes out (≤ 1 year); the wire body is always `type:
+"schedule"`. The 10-minute window is the user's undo button: the post is
+visible and cancellable in the Postiz UI before it goes live, and the
+manifest description instructs the agent to say exactly that and never
+claim immediate publication. **Allowing `type:"now"` remains an open
+owner toggle** — flipping it is a one-line wire change but a policy
+decision, deliberately not taken autonomously.
+
+Other safety pins: `settings.__type` is derived server-side from a fresh
+/integrations lookup keyed by channel id (model-supplied platform
+strings are ignored — spec-pinned); minimal `{__type}` settings only,
+with vendor 400s on richer-schema platforms normalized to "Postiz
+rejected the post settings for <platform>…" (vendor field names
+redacted); all other vendor failures → "Postiz responded NNN".
+
+**Fixture caveat:** the recorded /integrations and /posts shapes are
+DOCS-DERIVED (public-api/integrations/list.md + posts/create.md, fetched
+2026-06-11) — we hold no Postiz key, so verifying the binding against
+live-recorded fixtures is a deploy-time TODO. Remaining open items from
+the bake-off blockers: (3) bridge-budget story for self-hosters raising
+API_LIMIT (vendor caps ~90-100 create-calls/h, noted in display.hint),
+(4) delete-500 normalization if delete_post is ever added; media posts
+(POST /upload) and per-platform settings schemas are explicitly out of
+v1 scope.

@@ -20,6 +20,7 @@ import { calculate } from "./bindings/calculator";
 import { listVoices, textToSpeech } from "./bindings/elevenlabs";
 import { stockQuote } from "./bindings/finance";
 import { scrapeUrl, searchWeb } from "./bindings/firecrawl";
+import { createPost, listChannels } from "./bindings/postiz";
 import { getWeather } from "./bindings/weather";
 
 const UNMETERED = {
@@ -281,6 +282,76 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     pricing: "byok",
     maintainer: "ilianherzi",
   },
+
+  {
+    id: "social_post",
+    display: {
+      label: "Social post",
+      hint:
+        "Schedule posts to connected social accounts via Postiz (BYOK — self-host free under AGPL, cloud from $29/mo; vendor caps ~90-100 create-calls/hour)",
+      icon: "Share2",
+    },
+    description:
+      "list_channels returns the user's connected social accounts as " +
+      "{id, platform, name} rows; create_post schedules ONE text post to 1-5 " +
+      "of those channels at `scheduleAt`. Call list_channels first and use " +
+      "ids from it; never invent channel ids. SCHEDULING IS MANDATORY: posts " +
+      "are always scheduled at least 10 minutes out so the user can review/" +
+      "cancel in Postiz; never claim a post was published immediately — " +
+      "immediate posting is deliberately unsupported. After a successful " +
+      "create_post, tell the user when the post is scheduled for and that " +
+      "they can still cancel it in Postiz.",
+    binding: {
+      kind: "webhook",
+      endpoint: "/api/tools/social_post",
+      functions: [
+        {
+          name: "list_channels",
+          description:
+            "List connected social channels as compact {id, platform, name} rows (capped at 50). Call this before create_post.",
+          parameters: { type: "object", properties: {} },
+        },
+        {
+          name: "create_post",
+          description:
+            "Schedule one text post to 1-5 channels. Requires scheduleAt — an ISO datetime at least 10 minutes in the future (there is NO immediate-post option); the user can cancel the scheduled post in Postiz.",
+          parameters: {
+            type: "object",
+            properties: {
+              text: {
+                type: "string",
+                description: "The post text, up to 5,000 characters.",
+              },
+              channelIds: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "1-5 channel ids exactly as returned by list_channels.",
+              },
+              scheduleAt: {
+                type: "string",
+                description:
+                  'ISO 8601 datetime to publish at, e.g. "2026-06-12T15:30:00Z". Must be at least 10 minutes in the future and at most 1 year out.',
+              },
+            },
+            required: ["text", "channelIds", "scheduleAt"],
+          },
+        },
+      ],
+    },
+    providers: ["anthropic", "openai", "gemini"],
+    auth: { requiresSignIn: false, secrets: ["POSTIZ_API_KEY"] },
+    policy: { allowance: UNMETERED, meterMode: "per-turn" },
+    upstream: {
+      project: "Postiz",
+      repo: "https://github.com/gitroomhq/postiz-app",
+      license: "AGPL-3.0",
+      author: "Gitroom (Nevo David)",
+    },
+    category: "social",
+    pricing: "byok",
+    maintainer: "ilianherzi",
+  },
 ];
 
 /**
@@ -321,6 +392,7 @@ const HANDLERS: Record<string, Record<string, ToolHandler>> = {
   stock_quote: { stock_quote: stockQuote },
   web_scrape: { scrape_url: scrapeUrl, search_web: searchWeb },
   tts: { text_to_speech: textToSpeech, list_voices: listVoices },
+  social_post: { list_channels: listChannels, create_post: createPost },
 };
 
 /**
