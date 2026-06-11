@@ -689,3 +689,28 @@ Shovels / Postiz from the shortlist when prioritized.
 
 PR #18 (private wave) still open; no owner gate moved. Surface remains
 stable per the previous entry; no autonomous work queued by design.
+
+### 2026-06-11 — Trending sweep retried: PH June leaderboard + Show HN (direct fetch)
+
+web_search remains org-policy-blocked; PH/HN page fetches work, so this
+is a fuller sweep than the watch-list note above.
+
+Binding candidates (meet the recipe bar — real API, agent-shaped):
+- **Publora** (PH): publishing API posting across 10 social networks,
+  explicitly agent-first ("via MCP/API, works with Claude/Cursor").
+  Directly overlaps the Postiz shortlist slot — evaluate head-to-head;
+  whichever has the cleaner BYOK + per-post pricing wins the slot.
+- **SpadeBox** (Show HN): sandboxed tooling + JS runtime for agents —
+  not a binding, but relevant to the M3 trust model (a sandbox layer is
+  one answer to running remote-manifest tools safely).
+- **Ory API-key server** (Show HN, OSS Go): self-hostable key management
+  — candidate infra for the BYOK story (per-user key vaulting) rather
+  than a model-callable tool.
+Watch only: HelixDB (graph-on-object-storage; query-tool potential once
+hosted), Artie (warehouse replication; enterprise-shaped), Workplane
+(agent/human file workspace — competitor signal, not a binding).
+Meta-signal: the June PH leaderboard is dominated by agent-NATIVE
+products (Publora, SellerClaw, Vokal) — the marketplace thesis (tools
+declare agent-readiness via manifest) is the market's direction, not a
+bet. Shortlist update: Postiz-vs-Publora bake-off replaces the bare
+Postiz slot; fal.ai and Shovels unchanged.
