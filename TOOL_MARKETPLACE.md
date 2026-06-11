@@ -953,3 +953,24 @@ auditable. The marker must be made metering-safe (excluded from billable-tool
 counting/strip seams) so adding it doesn't perturb usage accounting. Net: no
 flag day, no lost traces across the cutover, and a clean rollback (stop
 sending the marker → everything falls back to the stream path).
+
+### 2026-06-11 — Decision: a durable agent run needs a job-id-keyed LINK that polls the queue directly, not just a thread-bound stream/resume
+A persisted run trace + a resume poll keyed by the chat turn (chatId/nodeId)
+recovers a refreshed thread — but it is still bound to that thread's poll
+loop. When the run is an at-least-once queue job that outlives any single
+worker (the worker can freeze past its maxDuration while the job keeps going),
+the thread-bound poll can be severed and the run drops out of view even though
+the job is still progressing. The fix is to give every such turn a LINK keyed
+by the upstream JOB ID that polls the job DIRECTLY — a standalone page that
+hits a `/job/[jobId]` proxy and folds the job snapshot with the SAME mapper the
+in-thread stream uses, so the two surfaces agree byte-for-byte. Three
+requirements make it robust: (1) surface the job id to the client from BOTH
+the live event AND the durable record's resume path, so the link exists during
+the run and survives a refresh; (2) the proxy validates the id shape BEFORE any
+upstream fetch and kind-guards the job (so it can only ever serve its own job
+kind, never another org/kind through the same endpoint); (3) it rides the
+shared credential ladder + transient-vs-terminal 503 contract the other
+job-poll pages use, so ownership is enforced by upstream org-scoping and the
+page poller only stops on a genuine terminal status. Net: the run is checkable
+from any later session by link, decoupled from whether the launching thread's
+own poll ever completed.
