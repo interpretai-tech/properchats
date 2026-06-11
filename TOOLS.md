@@ -7,6 +7,11 @@
 ([docs/PUBLIC_TOOL_ECOSYSTEM.md](docs/PUBLIC_TOOL_ECOSYSTEM.md)). Add yours:
 [CONTRIBUTING_TOOLS.md](CONTRIBUTING_TOOLS.md).
 
+Every webhook tool below is **model-callable in the chat loop** as
+`<id>__<fn>` on direct chat turns (marketplace phase M2), in addition to its
+`POST /api/tools/<id>` bridge endpoint. BYOK tools whose secrets aren't
+configured on the server are stripped from the model's tool list per request.
+
 | id | Label | What | Functions | Category | Pricing | Upstream | Maintainer |
 |---|---|---|---|---|---|---|---|
 | `weather` | Weather | Current conditions and 3-day forecast for any place | `get_weather` | data | keyless | [wttr.in](https://github.com/chubin/wttr.in) (Apache-2.0) | @ilianherzi |

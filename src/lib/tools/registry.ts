@@ -246,6 +246,30 @@ const HANDLERS: Record<string, Record<string, ToolHandler>> = {
 };
 
 /**
+ * One-seam metering (TOOL_MARKETPLACE.md "meterable pricing" note): every
+ * dispatch — whether it came from the `/api/tools/[tool]` bridge or from a
+ * model tool-call in the chat loop — is counted here, per *invocation* (an
+ * agent turn can call one tool dozens of times). In-memory counter plus a
+ * labeled debug line shaped for the cost plane (OTEL → Prometheus) to pick up
+ * later. Labels carry key *aliases* (env var names), never key material.
+ */
+const toolCallCounts = new Map<string, number>();
+
+/** Snapshot of per-tool invocation counts (process-local; for tests/debug). */
+export function getToolCallCounts(): Record<string, number> {
+  return Object.fromEntries(toolCallCounts);
+}
+
+function meterToolCall(manifest: ToolManifest, fn: string): void {
+  const n = (toolCallCounts.get(manifest.id) ?? 0) + 1;
+  toolCallCounts.set(manifest.id, n);
+  const keyAlias = manifest.auth.secrets?.[0] ?? "none";
+  console.debug(
+    `[metrics] tool_calls_total{tool="${manifest.id}",fn="${fn}",pricing="${manifest.pricing ?? "keyless"}",key_alias="${keyAlias}"} ${n}`,
+  );
+}
+
+/**
  * Invoke one declared function of a registered tool. Throws `ToolError` with
  * an HTTP status hint (404 unknown tool/function, 400 bad args, 501 binding
  * not locally invokable, 502 upstream failure).
@@ -270,5 +294,6 @@ export async function invokeTool(
   if (!handler) {
     throw new ToolError(`Function "${functionName}" of "${toolId}" has no bridge handler yet`, 501);
   }
+  meterToolCall(manifest, functionName);
   return handler(args);
 }

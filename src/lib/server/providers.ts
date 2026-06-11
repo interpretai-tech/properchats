@@ -1,3 +1,9 @@
+import {
+  manifestToToolDefs,
+  runToolDef,
+  toolDefTraceText,
+  type ProviderToolDef,
+} from "../tools/defs";
 import type { Capability, Provider, Route, Source, StreamEvent } from "../types";
 
 /**
@@ -250,6 +256,37 @@ async function* interpretStream(input: DispatchInput): AsyncGenerator<StreamEven
   }
 }
 
+// --------------------------------------------------------------------------
+// Community (marketplace) tools — TOOL_MARKETPLACE.md M2. Every registered
+// webhook manifest becomes a model-callable function (`<toolId>__<fn>`) on
+// *direct chat* turns; the adapters below translate the provider-agnostic
+// defs to each native tool format and run an agentic loop: tool-call event →
+// dispatch through the same registry seam as /api/tools/[tool] → result back
+// to the model → continue. Scope decisions:
+//
+// - Chat capability only: capability turns (web_search/image/…) already carry
+//   provider *server* tools with their own stream semantics; mixing client
+//   tools in is a separate step. The interpret route is untouched (its
+//   backend speaks plain messages).
+// - Union degradation: `manifestToToolDefs()` strips unconfigured/BYOK-missing
+//   bindings per request — the model never sees them, nothing 4xxes mid-loop.
+// - Bounded rounds: a turn runs at most COMMUNITY_TOOL_ROUNDS tool rounds,
+//   then the last response stands (agent loops must terminate).
+// --------------------------------------------------------------------------
+
+const COMMUNITY_TOOL_ROUNDS = 6;
+
+function communityToolDefs(cap: Capability): ProviderToolDef[] {
+  return cap === "chat" ? manifestToToolDefs() : [];
+}
+
+/** Gemini `functionResponse.response` must be a JSON *object*; wrap others. */
+function asResponseObject(result: unknown): Record<string, unknown> {
+  return result && typeof result === "object" && !Array.isArray(result)
+    ? (result as Record<string, unknown>)
+    : { result: result ?? null };
+}
+
 /**
  * Server-tool config for an Anthropic capability turn. Tool version strings and
  * the code-execution beta header are verified against docs.anthropic.com.
@@ -286,6 +323,14 @@ async function* anthropicStream(input: DispatchInput): AsyncGenerator<StreamEven
   yield { type: "start", provider: "anthropic", route: "direct", model: input.model };
 
   const { tools, beta } = anthropicTools(input.capability ?? "chat");
+  // Community (marketplace) client tools ride along on chat turns, in
+  // Anthropic's custom-tool shape ({ name, description, input_schema }).
+  const communityTools = communityToolDefs(input.capability ?? "chat").map((d) => ({
+    name: d.name,
+    description: d.description,
+    input_schema: d.parameters,
+  }));
+  const allTools = [...(tools ?? []), ...communityTools];
   const headers: Record<string, string> = {
     "x-api-key": key,
     "anthropic-version": "2023-06-01",
@@ -293,99 +338,143 @@ async function* anthropicStream(input: DispatchInput): AsyncGenerator<StreamEven
   };
   if (beta) headers["anthropic-beta"] = beta;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: input.model,
-      ...(input.system ? { system: input.system } : {}),
-      messages: input.messages.map((m) =>
-        hasMedia(m)
-          ? {
-              role: m.role,
-              content: [
-                ...(m.content ? [{ type: "text", text: m.content }] : []),
-                ...(m.image_urls ?? []).map((url) => ({ type: "image", source: { type: "url", url } })),
-                ...(m.documents ?? []).map(anthropicDocumentBlock),
-              ],
-            }
-          : { role: m.role, content: m.content },
-      ),
-      max_tokens: input.maxTokens,
-      ...(tools ? { tools } : {}),
-      // `temperature` is deprecated on the Claude 4.x line (returns 400), so we
-      // omit it for Anthropic and let the model use its default.
-      stream: true,
-    }),
-  });
-  if (!res.ok) {
-    yield { type: "error", error: `Anthropic: ${await errorText(res)}` };
-    return;
-  }
+  // Mutable native message list so tool rounds can append turns.
+  const msgs: Record<string, unknown>[] = input.messages.map((m) =>
+    hasMedia(m)
+      ? {
+          role: m.role,
+          content: [
+            ...(m.content ? [{ type: "text", text: m.content }] : []),
+            ...(m.image_urls ?? []).map((url) => ({ type: "image", source: { type: "url", url } })),
+            ...(m.documents ?? []).map(anthropicDocumentBlock),
+          ],
+        }
+      : { role: m.role, content: m.content },
+  );
+
   let stopReason: string | null = null;
   let outTokens: number | undefined;
   let inTokens: number | undefined;
-  // Track server_tool_use blocks so we can surface the search query as a trace.
-  const toolBlocks = new Map<number, { name: string; json: string }>();
-  for await (const ev of iterateSSE(res)) {
-    const t = ev.type as string;
-    if (t === "message_start") {
-      const usage = (ev.message as { usage?: { input_tokens?: number } })?.usage;
-      inTokens = usage?.input_tokens;
-    } else if (t === "content_block_start") {
-      const idx = ev.index as number;
-      const block = ev.content_block as
-        | { type?: string; name?: string; content?: { url?: string; title?: string }[] }
-        | undefined;
-      if (block?.type === "server_tool_use" && block.name) {
-        toolBlocks.set(idx, { name: block.name, json: "" });
-      }
-      // Web-search results arrive whole in the block-start event.
-      if (block?.type === "web_search_tool_result" && Array.isArray(block.content)) {
-        const sources: Source[] = block.content
-          .filter((r) => r?.url)
-          .map((r) => ({ url: r.url as string, title: r.title }));
-        if (sources.length) yield { type: "sources", sources };
-      }
-    } else if (t === "content_block_delta") {
-      const idx = ev.index as number;
-      const delta = ev.delta as {
-        type?: string;
-        text?: string;
-        partial_json?: string;
-        citation?: { url?: string; title?: string };
-      };
-      if (delta?.type === "text_delta" && delta.text) {
-        yield { type: "delta", text: delta.text };
-      } else if (delta?.type === "citations_delta" && delta.citation?.url) {
-        yield { type: "sources", sources: [{ url: delta.citation.url, title: delta.citation.title }] };
-      } else if (delta?.type === "input_json_delta" && toolBlocks.has(idx)) {
-        toolBlocks.get(idx)!.json += delta.partial_json ?? "";
-      }
-    } else if (t === "content_block_stop") {
-      const idx = ev.index as number;
-      const tb = toolBlocks.get(idx);
-      if (tb?.name === "web_search") {
-        let query: string | undefined;
-        try {
-          query = (JSON.parse(tb.json) as { query?: string }).query;
-        } catch {
-          /* partial / non-json */
-        }
-        yield { type: "trace", text: query ? `Searched the web for “${query}”` : "Searched the web" };
-      } else if (tb?.name === "code_execution") {
-        yield { type: "trace", text: "Ran code in the sandbox" };
-      }
-    } else if (t === "message_delta") {
-      const delta = ev.delta as { stop_reason?: string };
-      const usage = ev.usage as { output_tokens?: number } | undefined;
-      if (delta?.stop_reason) stopReason = delta.stop_reason;
-      if (usage?.output_tokens != null) outTokens = usage.output_tokens;
-    } else if (t === "error") {
-      const e = ev.error as { message?: string } | undefined;
-      yield { type: "error", error: `Anthropic: ${e?.message || "stream error"}` };
+
+  for (let round = 0; round <= COMMUNITY_TOOL_ROUNDS; round++) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: input.model,
+        ...(input.system ? { system: input.system } : {}),
+        messages: msgs,
+        max_tokens: input.maxTokens,
+        ...(allTools.length ? { tools: allTools } : {}),
+        // `temperature` is deprecated on the Claude 4.x line (returns 400), so we
+        // omit it for Anthropic and let the model use its default.
+        stream: true,
+      }),
+    });
+    if (!res.ok) {
+      yield { type: "error", error: `Anthropic: ${await errorText(res)}` };
       return;
     }
+    stopReason = null;
+    // Track server_tool_use blocks so we can surface the search query as a trace,
+    // and client tool_use blocks so we can dispatch them through the registry.
+    const toolBlocks = new Map<number, { name: string; json: string }>();
+    const clientCalls: { id: string; name: string; json: string }[] = [];
+    const clientBlockIdx = new Map<number, number>(); // stream index → clientCalls index
+    let textAcc = "";
+    for await (const ev of iterateSSE(res)) {
+      const t = ev.type as string;
+      if (t === "message_start") {
+        const usage = (ev.message as { usage?: { input_tokens?: number } })?.usage;
+        if (usage?.input_tokens != null) inTokens = (inTokens ?? 0) + usage.input_tokens;
+      } else if (t === "content_block_start") {
+        const idx = ev.index as number;
+        const block = ev.content_block as
+          | { type?: string; id?: string; name?: string; content?: { url?: string; title?: string }[] }
+          | undefined;
+        if (block?.type === "server_tool_use" && block.name) {
+          toolBlocks.set(idx, { name: block.name, json: "" });
+        }
+        if (block?.type === "tool_use" && block.name && block.id) {
+          clientBlockIdx.set(idx, clientCalls.length);
+          clientCalls.push({ id: block.id, name: block.name, json: "" });
+        }
+        // Web-search results arrive whole in the block-start event.
+        if (block?.type === "web_search_tool_result" && Array.isArray(block.content)) {
+          const sources: Source[] = block.content
+            .filter((r) => r?.url)
+            .map((r) => ({ url: r.url as string, title: r.title }));
+          if (sources.length) yield { type: "sources", sources };
+        }
+      } else if (t === "content_block_delta") {
+        const idx = ev.index as number;
+        const delta = ev.delta as {
+          type?: string;
+          text?: string;
+          partial_json?: string;
+          citation?: { url?: string; title?: string };
+        };
+        if (delta?.type === "text_delta" && delta.text) {
+          textAcc += delta.text;
+          yield { type: "delta", text: delta.text };
+        } else if (delta?.type === "citations_delta" && delta.citation?.url) {
+          yield { type: "sources", sources: [{ url: delta.citation.url, title: delta.citation.title }] };
+        } else if (delta?.type === "input_json_delta") {
+          if (toolBlocks.has(idx)) toolBlocks.get(idx)!.json += delta.partial_json ?? "";
+          const ci = clientBlockIdx.get(idx);
+          if (ci != null) clientCalls[ci].json += delta.partial_json ?? "";
+        }
+      } else if (t === "content_block_stop") {
+        const idx = ev.index as number;
+        const tb = toolBlocks.get(idx);
+        if (tb?.name === "web_search") {
+          let query: string | undefined;
+          try {
+            query = (JSON.parse(tb.json) as { query?: string }).query;
+          } catch {
+            /* partial / non-json */
+          }
+          yield { type: "trace", text: query ? `Searched the web for “${query}”` : "Searched the web" };
+        } else if (tb?.name === "code_execution") {
+          yield { type: "trace", text: "Ran code in the sandbox" };
+        }
+      } else if (t === "message_delta") {
+        const delta = ev.delta as { stop_reason?: string };
+        const usage = ev.usage as { output_tokens?: number } | undefined;
+        if (delta?.stop_reason) stopReason = delta.stop_reason;
+        if (usage?.output_tokens != null) outTokens = (outTokens ?? 0) + usage.output_tokens;
+      } else if (t === "error") {
+        const e = ev.error as { message?: string } | undefined;
+        yield { type: "error", error: `Anthropic: ${e?.message || "stream error"}` };
+        return;
+      }
+    }
+
+    if (stopReason !== "tool_use" || !clientCalls.length || round === COMMUNITY_TOOL_ROUNDS) break;
+
+    // Tool round: replay the assistant turn, dispatch each call through the
+    // registry seam (same one /api/tools uses), feed results back, continue.
+    const toolUseBlocks = clientCalls.map((c) => {
+      let parsedInput: Record<string, unknown> = {};
+      try {
+        parsedInput = c.json ? (JSON.parse(c.json) as Record<string, unknown>) : {};
+      } catch {
+        /* model emitted malformed json; dispatch with empty args */
+      }
+      return { type: "tool_use", id: c.id, name: c.name, input: parsedInput };
+    });
+    msgs.push({
+      role: "assistant",
+      content: [...(textAcc ? [{ type: "text", text: textAcc }] : []), ...toolUseBlocks],
+    });
+    const resultBlocks: Record<string, unknown>[] = [];
+    for (const call of toolUseBlocks) {
+      yield { type: "status", text: `Running ${call.name}…` };
+      const result = await runToolDef(call.name, call.input);
+      yield { type: "trace", text: toolDefTraceText(call.name) };
+      resultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+    }
+    msgs.push({ role: "user", content: resultBlocks });
   }
   yield { type: "done", usage: { input: inTokens, output: outTokens }, stopReason };
 }
@@ -404,7 +493,8 @@ async function* openaiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
   // gpt-5 / o-series are reasoning models: they require max_completion_tokens
   // and reject a non-default temperature.
   const isReasoning = /^(o\d|gpt-5)/.test(input.model);
-  const messages = [
+  // Mutable native message list so community-tool rounds can append turns.
+  const messages: Record<string, unknown>[] = [
     ...(input.system ? [{ role: "system", content: input.system }] : []),
     ...input.messages.map((m) =>
       hasMedia(m)
@@ -419,39 +509,105 @@ async function* openaiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
         : { role: m.role, content: m.content },
     ),
   ];
-  const body: Record<string, unknown> = {
-    model: input.model,
-    messages,
-    stream: true,
-    stream_options: { include_usage: true },
-  };
-  if (isReasoning) {
-    body.max_completion_tokens = input.maxTokens;
-  } else {
-    body.max_tokens = input.maxTokens;
-    if (input.temperature != null) body.temperature = input.temperature;
-  }
+  // Community (marketplace) client tools, in chat/completions function shape.
+  const communityTools = communityToolDefs(input.capability ?? "chat").map((d) => ({
+    type: "function",
+    function: { name: d.name, description: d.description, parameters: d.parameters },
+  }));
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    yield { type: "error", error: `OpenAI: ${await errorText(res)}` };
-    return;
-  }
   let stopReason: string | null = null;
   let usage: { input?: number; output?: number } | undefined;
-  for await (const chunk of iterateSSE(res)) {
-    const choices = chunk.choices as
-      | { delta?: { content?: string }; finish_reason?: string | null }[]
-      | undefined;
-    const choice = choices?.[0];
-    if (choice?.delta?.content) yield { type: "delta", text: choice.delta.content };
-    if (choice?.finish_reason) stopReason = choice.finish_reason;
-    const u = chunk.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
-    if (u) usage = { input: u.prompt_tokens, output: u.completion_tokens };
+
+  for (let round = 0; round <= COMMUNITY_TOOL_ROUNDS; round++) {
+    const body: Record<string, unknown> = {
+      model: input.model,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(communityTools.length ? { tools: communityTools } : {}),
+    };
+    if (isReasoning) {
+      body.max_completion_tokens = input.maxTokens;
+    } else {
+      body.max_tokens = input.maxTokens;
+      if (input.temperature != null) body.temperature = input.temperature;
+    }
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      yield { type: "error", error: `OpenAI: ${await errorText(res)}` };
+      return;
+    }
+    stopReason = null;
+    let textAcc = "";
+    // Accumulate streamed tool_calls deltas by index.
+    const calls = new Map<number, { id: string; name: string; args: string }>();
+    for await (const chunk of iterateSSE(res)) {
+      const choices = chunk.choices as
+        | {
+            delta?: {
+              content?: string;
+              tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[];
+            };
+            finish_reason?: string | null;
+          }[]
+        | undefined;
+      const choice = choices?.[0];
+      if (choice?.delta?.content) {
+        textAcc += choice.delta.content;
+        yield { type: "delta", text: choice.delta.content };
+      }
+      for (const tc of choice?.delta?.tool_calls ?? []) {
+        const cur = calls.get(tc.index) ?? { id: "", name: "", args: "" };
+        if (tc.id) cur.id = tc.id;
+        if (tc.function?.name) cur.name += tc.function.name;
+        if (tc.function?.arguments) cur.args += tc.function.arguments;
+        calls.set(tc.index, cur);
+      }
+      if (choice?.finish_reason) stopReason = choice.finish_reason;
+      const u = chunk.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+      if (u) {
+        usage = {
+          input: (usage?.input ?? 0) + (u.prompt_tokens ?? 0),
+          output: (usage?.output ?? 0) + (u.completion_tokens ?? 0),
+        };
+      }
+    }
+
+    const toolCalls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, c]) => c);
+    if (stopReason !== "tool_calls" || !toolCalls.length || round === COMMUNITY_TOOL_ROUNDS) break;
+
+    // Tool round: replay the assistant turn, dispatch through the registry
+    // seam, append per-call tool results, continue the loop.
+    messages.push({
+      role: "assistant",
+      content: textAcc || null,
+      tool_calls: toolCalls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.name, arguments: c.args || "{}" },
+      })),
+    });
+    for (const c of toolCalls) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = c.args ? (JSON.parse(c.args) as Record<string, unknown>) : {};
+      } catch {
+        /* malformed args from the model; dispatch with empty args */
+      }
+      yield { type: "status", text: `Running ${c.name}…` };
+      const result = await runToolDef(c.name, args);
+      yield { type: "trace", text: toolDefTraceText(c.name) };
+      messages.push({
+        role: "tool",
+        tool_call_id: c.id,
+        content: JSON.stringify(result),
+      });
+    }
   }
   yield { type: "done", usage, stopReason };
 }
@@ -602,6 +758,8 @@ interface GeminiPart {
   executable_code?: { language?: string; code?: string };
   codeExecutionResult?: { outcome?: string; output?: string };
   code_execution_result?: { outcome?: string; output?: string };
+  functionCall?: { name?: string; args?: Record<string, unknown> };
+  function_call?: { name?: string; args?: Record<string, unknown> };
 }
 
 /** Turn an executable-code / code-result part into rendered markdown. */
@@ -686,76 +844,128 @@ async function* geminiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
   }
 
   yield { type: "start", provider: "gemini", route: "direct", model: input.model };
-  const tools = geminiTools(cap);
+  const tools = geminiTools(cap) ?? [];
+  // Community (marketplace) client tools, as Gemini function declarations.
+  const communityDefs = communityToolDefs(cap);
+  if (communityDefs.length) {
+    tools.push({
+      function_declarations: communityDefs.map((d) => ({
+        name: d.name,
+        description: d.description,
+        parameters: d.parameters,
+      })),
+    });
+  }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     input.model,
   )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: geminiContents(input),
-      ...(input.system ? { systemInstruction: { parts: [{ text: input.system }] } } : {}),
-      ...(tools ? { tools } : {}),
-      generationConfig: {
-        maxOutputTokens: input.maxTokens,
-        ...(input.temperature != null ? { temperature: input.temperature } : {}),
-      },
-    }),
-  });
-  if (!res.ok) {
-    yield { type: "error", error: `Gemini: ${await errorText(res)}` };
-    return;
-  }
+
+  // Mutable contents list so community-tool rounds can append turns.
+  const contents: Record<string, unknown>[] = geminiContents(input);
   let usage: { input?: number; output?: number } | undefined;
   let stopReason: string | null = null;
   const seenSources = new Set<string>();
   const seenQueries = new Set<string>();
-  for await (const chunk of iterateSSE(res)) {
-    const candidates = chunk.candidates as
-      | {
-          content?: { parts?: GeminiPart[] };
-          finishReason?: string;
-          groundingMetadata?: {
-            groundingChunks?: { web?: { uri?: string; title?: string } }[];
-            webSearchQueries?: string[];
-          };
-        }[]
-      | undefined;
-    const cand = candidates?.[0];
-    const parts = cand?.content?.parts;
-    if (parts) {
-      for (const p of parts) {
-        if (p.text) yield { type: "delta", text: p.text };
-        const code = geminiCodePartText(p);
-        if (code) yield { type: "delta", text: code };
-      }
+
+  for (let round = 0; round <= COMMUNITY_TOOL_ROUNDS; round++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents,
+        ...(input.system ? { systemInstruction: { parts: [{ text: input.system }] } } : {}),
+        ...(tools.length ? { tools } : {}),
+        generationConfig: {
+          maxOutputTokens: input.maxTokens,
+          ...(input.temperature != null ? { temperature: input.temperature } : {}),
+        },
+      }),
+    });
+    if (!res.ok) {
+      yield { type: "error", error: `Gemini: ${await errorText(res)}` };
+      return;
     }
-    // Surface the search queries Gemini ran as activity traces.
-    for (const q of cand?.groundingMetadata?.webSearchQueries ?? []) {
-      if (q && !seenQueries.has(q)) {
-        seenQueries.add(q);
-        yield { type: "trace", text: `Searched the web for “${q}”` };
-      }
-    }
-    // Grounding citations accumulate across chunks; emit the new ones.
-    const grounding = cand?.groundingMetadata?.groundingChunks;
-    if (grounding?.length) {
-      const sources: Source[] = [];
-      for (const g of grounding) {
-        const uri = g.web?.uri;
-        if (uri && !seenSources.has(uri)) {
-          seenSources.add(uri);
-          sources.push({ url: uri, title: g.web?.title });
+    stopReason = null;
+    let textAcc = "";
+    const funcCalls: { name: string; args: Record<string, unknown> }[] = [];
+    for await (const chunk of iterateSSE(res)) {
+      const candidates = chunk.candidates as
+        | {
+            content?: { parts?: GeminiPart[] };
+            finishReason?: string;
+            groundingMetadata?: {
+              groundingChunks?: { web?: { uri?: string; title?: string } }[];
+              webSearchQueries?: string[];
+            };
+          }[]
+        | undefined;
+      const cand = candidates?.[0];
+      const parts = cand?.content?.parts;
+      if (parts) {
+        for (const p of parts) {
+          if (p.text) {
+            textAcc += p.text;
+            yield { type: "delta", text: p.text };
+          }
+          const code = geminiCodePartText(p);
+          if (code) yield { type: "delta", text: code };
+          const fc = p.functionCall ?? p.function_call;
+          if (fc?.name) funcCalls.push({ name: fc.name, args: fc.args ?? {} });
         }
       }
-      if (sources.length) yield { type: "sources", sources };
+      // Surface the search queries Gemini ran as activity traces.
+      for (const q of cand?.groundingMetadata?.webSearchQueries ?? []) {
+        if (q && !seenQueries.has(q)) {
+          seenQueries.add(q);
+          yield { type: "trace", text: `Searched the web for “${q}”` };
+        }
+      }
+      // Grounding citations accumulate across chunks; emit the new ones.
+      const grounding = cand?.groundingMetadata?.groundingChunks;
+      if (grounding?.length) {
+        const sources: Source[] = [];
+        for (const g of grounding) {
+          const uri = g.web?.uri;
+          if (uri && !seenSources.has(uri)) {
+            seenSources.add(uri);
+            sources.push({ url: uri, title: g.web?.title });
+          }
+        }
+        if (sources.length) yield { type: "sources", sources };
+      }
+      if (cand?.finishReason) stopReason = cand.finishReason;
+      const meta = chunk.usageMetadata as
+        | { promptTokenCount?: number; candidatesTokenCount?: number }
+        | undefined;
+      if (meta) {
+        usage = {
+          input: (usage?.input ?? 0) + (meta.promptTokenCount ?? 0),
+          output: (usage?.output ?? 0) + (meta.candidatesTokenCount ?? 0),
+        };
+      }
     }
-    if (cand?.finishReason) stopReason = cand.finishReason;
-    const meta = chunk.usageMetadata as
-      | { promptTokenCount?: number; candidatesTokenCount?: number }
-      | undefined;
-    if (meta) usage = { input: meta.promptTokenCount, output: meta.candidatesTokenCount };
+
+    if (!funcCalls.length || round === COMMUNITY_TOOL_ROUNDS) break;
+
+    // Tool round: replay the model turn, dispatch through the registry seam,
+    // append functionResponse parts, continue the loop.
+    contents.push({
+      role: "model",
+      parts: [
+        ...(textAcc ? [{ text: textAcc }] : []),
+        ...funcCalls.map((c) => ({ function_call: { name: c.name, args: c.args } })),
+      ],
+    });
+    const responseParts: Record<string, unknown>[] = [];
+    for (const c of funcCalls) {
+      yield { type: "status", text: `Running ${c.name}…` };
+      const result = await runToolDef(c.name, c.args);
+      yield { type: "trace", text: toolDefTraceText(c.name) };
+      responseParts.push({
+        function_response: { name: c.name, response: asResponseObject(result) },
+      });
+    }
+    contents.push({ role: "user", parts: responseParts });
   }
   yield { type: "done", usage, stopReason };
 }

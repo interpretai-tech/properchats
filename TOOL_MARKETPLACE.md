@@ -369,3 +369,59 @@ consecutive rounds with disjoint probe strategies report clean — not when
 one review passes. The dedupe ledger (fixed vs deliberately-kept, with
 reasons) is what makes consecutive rounds cheap; without it every round
 re-litigates old adjudications.
+
+### 2026-06-11 — M2 SHIPPED: `manifestToToolDefs()` — manifests are model-callable in the chat loop
+
+The marketplace is now real in the M2 sense: a contributor's one-binding-file
++ one-registry-entry recipe makes their tool BOTH a webhook capability
+(`POST /api/tools/<id>`) and callable by the assistant, with zero extra work.
+What landed, and the design decisions:
+
+- **Defs adapter** (`src/lib/tools/defs.ts`): `manifestToToolDefs()` maps
+  each registered *webhook* manifest to a provider-agnostic def
+  `{ name, description, parameters }` — name namespaced `<toolId>__<fn>`
+  (resolved back via registry-prefix match, since ids contain single
+  underscores), description = per-function text + the manifest's agent blurb
+  (both are prompt text), schema passed through verbatim from the manifest.
+- **Chat-loop wiring** (`src/lib/server/providers.ts`): all three direct
+  chat adapters now run a bounded agentic loop (≤6 tool rounds) — Anthropic
+  custom tools (`input_schema` / `tool_use` / `tool_result`), OpenAI
+  chat-completions functions (`tool_calls` / role `tool`), Gemini
+  `function_declarations` / `function_call` / `function_response` (response
+  coerced to an object as the Struct field requires). Tool calls dispatch
+  through the SAME `invokeTool` seam as the bridge route; status + trace
+  events stream to the activity log per call. Scope: **direct chat turns
+  only** — capability turns keep their provider server-tool semantics, and
+  the interpret route is untouched (its backend speaks plain messages).
+- **Union degradation, as decided**: `manifestToToolDefs()` STRIPS any
+  binding whose `auth.secrets` env vars aren't configured — per request, the
+  model never sees it, nothing 402/503s mid-loop. Defense in depth:
+  `runToolDef` never throws; failures return to the model as `{ error }`
+  with normalized copy (`ToolError` messages are ours; anything else becomes
+  generic copy — raw vendor prose never reaches the model or UI).
+- **One-seam metering, as decided**: `invokeTool` (registry.ts) now counts
+  every invocation — bridge or chat-loop — into an in-memory counter and a
+  debug line shaped for the cost plane:
+  `tool_calls_total{tool, fn, pricing, key_alias}`, where `key_alias` is the
+  first `auth.secrets` env var *name* (never key material). Per-invocation,
+  not per-turn, per the One Agent metering learning.
+- **Shape tests** (`tests/tool-defs.spec.ts`, 9 specs, all green): the
+  Firecrawl binding driven through the FULL new path against *recorded* v2
+  response shapes (defs generated → dispatch → typed result, asserting the
+  exact endpoint + bearer header so a dead live key can't mask a protocol
+  mismatch), the no-key strip proof, normalized vendor-500 copy, and the
+  metering counter increment. CONTRIBUTING_TOOLS.md now requires shape +
+  strip tests and carries the normalizer-owns-copy and no-analytics-in-
+  bindings rules; TOOLS.md regenerated with the callability note.
+
+**M3 gate** (runtime registration — no fork needed): `TOOL_MANIFEST_URLS`
+env loads external manifest JSON; the bridge proxies invocation to the
+manifest's declared `endpoint` with an HMAC header. Entry criteria before
+building it: (1) manifest schema validation on load (an invalid remote
+manifest must be stripped exactly like an unconfigured binding — same
+degradation rule, now proven at the defs seam); (2) per-tool rate limits at
+the bridge (exists) extended to remote endpoints; (3) allowlist default-OFF
+in hosted deployments; (4) the one-seam metering above is the precondition
+for letting unreviewed remote tools run at all — unmetered tools are
+invisible cost. Remaining from §4: emit one OTEL span per bridge invocation
+tagged `tool.id` when an OTLP endpoint is configured.
