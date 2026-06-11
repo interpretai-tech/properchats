@@ -290,3 +290,17 @@ every contributed tool usage/billing observability for free, and it's a
 prerequisite for The One Agent calling marketplace tools unattended:
 unmetered tools are invisible cost. Key rule carried over: metric labels
 carry key *aliases* (env-var name or hash prefix), never key material.
+
+### 2026-06-11 — Degrade by stripping, not blocking (One Agent metering learnings)
+
+Pattern decision from hardening the private One Agent: when an agent holds
+a *union* of toolsets and one of them is quota-exhausted (or unconfigured),
+the right behavior is to **strip that token from the grant** for the turn
+— the agent keeps working with the rest — never to 402 the whole turn.
+Implemented as a generic `excludeInterpretTools` seam at the single place
+the tools list is built. Marketplace rule that follows: a manifest binding
+must tolerate being absent (the agent's prompt never promises a specific
+tool), and per-tool metering (see the meterable-pricing note above) is what
+makes stripping decidable. Second learning: meter per *invocation* in the
+turn's activity log, not per turn — agent loops can call one tool dozens of
+times per turn, and per-turn metering undercharges by exactly that factor.
