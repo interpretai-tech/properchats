@@ -580,3 +580,16 @@ contributor):**
 Verification: full Playwright suite 73 passed / 3 skipped (live-key tests),
 `tsc --noEmit` clean, `eslint .` clean, `next build` clean, `npm run
 gen:tools` regenerated.
+
+### 2026-06-11 — Recipe friction items closed in CONTRIBUTING_TOOLS.md
+
+The seven friction findings from the ElevenLabs dogfood are adjudicated:
+documented `_ui`/UI_PAYLOAD_KEY under a new "Binary output" rule (model
+sees metadata, bridge carries bytes — elevenlabs.ts is the template),
+blessed per-tool spec files over shared-spec edits, fixed the
+vendor-filename convention wording, made `upstream` explicitly
+OSS-wrapping-only, and pointed vendor pricing details at `display.hint`
+pending a structured field. Deferred deliberately: a structured
+pricing-details manifest field (wants the metering/billing planes to
+mature first) and live-or-skip bridge BYOK tests (inherent to not
+shipping keys in CI). Registry header drift fixed in 2fc585e.

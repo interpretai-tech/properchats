@@ -36,8 +36,20 @@ API). All in `src/lib/tools/bindings/`.
   honor its license.
 - **Agent-sized output**: trim upstream responses to what a model turn needs
   (see `weather.ts` — it cuts wttr.in's JSON to ~20 fields). No multi-MB blobs.
+- **Binary output (audio/images/files)**: never put bytes in the model-visible
+  result. Park the heavy payload (e.g. a `data:` URL) under the reserved
+  `UI_PAYLOAD_KEY` (`"_ui"`, exported from `../manifest`): `runToolDef` strips
+  it before the model loop sees the result, while `POST /api/tools/<id>`
+  passes it through to UI callers. The model-visible side carries compact
+  metadata only (`elevenlabs.ts` is the template: `{voiceId, characters,
+  contentType, bytes, audio: "<omitted: N bytes audio/mpeg>"}`). Cap the
+  *input* side too (tts refuses >2,500 chars with instructive copy).
 
-## 1. Write the binding — `src/lib/tools/bindings/<id>.ts`
+## 1. Write the binding — `src/lib/tools/bindings/<vendor>.ts`
+
+(Name the file after the vendor/product you wrap — `firecrawl.ts` serves the
+`web_scrape` tool id, `elevenlabs.ts` serves `tts`. The registry entry, not
+the filename, owns the tool id.)
 
 A binding exports one async function per tool function. Shape rules, all
 visible in `weather.ts`:
@@ -107,7 +119,12 @@ responses (`tests/tool-defs.spec.ts` is the template):
    functions are absent from `manifestToToolDefs()` and that a forced
    dispatch returns normalized `{ error }` data instead of throwing.
 
-Run: `npx playwright test tests/tools-registry.spec.ts tests/tool-defs.spec.ts`.
+Put your tests in a standalone per-tool spec (`tests/<vendor>-<id>.spec.ts`,
+e.g. `tests/elevenlabs-tts.spec.ts`) rather than editing the shared spec
+files — it avoids contributor merge conflicts; the shared specs cover the
+platform seams, yours covers your binding.
+
+Run: `npx playwright test tests/<your-spec>.spec.ts tests/tool-defs.spec.ts`.
 CI runs the same specs on your PR. (If your PR *deletes* files, run
 typecheck from a clean build dir — `rm -rf .next && npx tsc --noEmit` —
 stale `.next/types` validators produce phantom errors.)
@@ -121,11 +138,15 @@ stale `.next/types` validators produce phantom errors.)
 - [ ] No secrets in code, logs, or test fixtures; env var names only.
 - [ ] All error copy is yours (`ToolError`), no raw vendor prose; no
       analytics/telemetry SDKs in the binding.
-- [ ] `upstream` attribution filled for wrapped OSS (and be a good citizen:
+- [ ] `upstream` attribution filled **if** you wrap an OSS project — omit it
+      for plain vendor-API bindings (and be a good citizen:
       tell the upstream author — see the notes in
       [TOOL-OPENSOURCE-properchats.md](TOOL-OPENSOURCE-properchats.md)).
 - [ ] Manifest `description` reviewed as prompt text, not just docs.
 - [ ] `npm run gen:tools` run so TOOLS.md reflects your entry.
+- [ ] Vendor pricing details (free tier, unit prices) go in `display.hint` —
+      the manifest's `pricing` field is the coarse class (`keyless`/`byok`/…)
+      until a structured pricing-details field lands.
 
 That's the whole surface. Merging the PR makes your tool BOTH a webhook
 capability (`POST /api/tools/<id>`) and directly callable by the assistant in
