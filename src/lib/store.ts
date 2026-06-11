@@ -71,6 +71,49 @@ export function highlightMatchesText(text: string, highlight: string): boolean {
   return core.length >= 8 && snippet(text, 100_000).includes(core);
 }
 
+// ── tool_ui append bounds ───────────────────────────────────────────────────
+// tool_ui payloads are server-sanitized base64 data URLs (≤ 4.2 M chars each;
+// see TOOL_UI_MAX_DATAURL_CHARS in providers.ts), held in memory only — like
+// inline images they're stripped before persisting (stripInlineImages). But a
+// long multi-call turn could still pile clips into one message unboundedly,
+// so appends are capped at the message level too.
+
+/** Max audio clips kept per message. */
+export const TOOL_UI_MAX_CLIPS_PER_MESSAGE = 4;
+/**
+ * Max combined dataUrl chars kept per message: two worst-case clips
+ * (2 × 4.2 M, the server-side per-payload cap) ≈ ~8.4 MB of in-memory string.
+ */
+export const TOOL_UI_MAX_TOTAL_DATAURL_CHARS = 8_400_000;
+
+type ToolUiClip = NonNullable<Message["toolUi"]>[number];
+
+/**
+ * Bounded append for a message's tool_ui clips. Policy: REFUSE THE NEWEST —
+ * earlier clips are already referenced by the streamed prose, so silently
+ * replacing them would orphan that text; the refused clip is logged and the
+ * list returned unchanged.
+ */
+export function appendToolUi(
+  existing: ToolUiClip[] | undefined,
+  clip: ToolUiClip,
+): ToolUiClip[] {
+  const cur = existing ?? [];
+  const total = cur.reduce((n, u) => n + u.payload.dataUrl.length, 0);
+  if (
+    cur.length >= TOOL_UI_MAX_CLIPS_PER_MESSAGE ||
+    total + clip.payload.dataUrl.length > TOOL_UI_MAX_TOTAL_DATAURL_CHARS
+  ) {
+    console.warn(
+      `[tool_ui] refused clip from ${clip.tool}.${clip.fn}: message already holds ` +
+        `${cur.length} clip(s) / ${total} chars (caps: ${TOOL_UI_MAX_CLIPS_PER_MESSAGE} clips, ` +
+        `${TOOL_UI_MAX_TOTAL_DATAURL_CHARS} chars)`,
+    );
+    return cur;
+  }
+  return [...cur, clip];
+}
+
 /** Append new citations to a message's source list, de-duplicating by URL. */
 function mergeSources(existing: Source[] | undefined, incoming: Source[]): Source[] {
   const out = existing ? existing.slice() : [];
@@ -563,7 +606,7 @@ export const useStore = create<StoreState>()(
                 setStatus(nodeId, null);
                 patchMessage(nodeId, assistantId, (m) => ({
                   ...m,
-                  toolUi: [...(m.toolUi ?? []), { tool: ev.tool, fn: ev.fn, payload: ev.payload }],
+                  toolUi: appendToolUi(m.toolUi, { tool: ev.tool, fn: ev.fn, payload: ev.payload }),
                 }));
               },
               onSources: (sources) =>

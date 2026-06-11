@@ -620,3 +620,54 @@ session-only by design. The `_ui` pipeline is now end-to-end:
 binding → strip → whitelist → SSE → audio chip; next kinds: image,
 file-download. Specs in `tests/tool-ui.spec.ts` (stubbed loop + vendor,
 whitelist pins, mocked-stream UI render).
+
+### 2026-06-11 — Bridge abuse posture hardened; `_ui` bounds calibrated end-to-end
+
+Critic findings on the `_ui`/bridge/tts surface, fixed:
+
+**Bridge posture (`/api/tools/[tool]` POST).** The route stays
+unauthenticated (it's the public bridge) but is no longer drivable from a
+hostile page in someone else's browser, and BYOK keys are no longer
+single-rate-limit-away from cost-DoS. Three gates, in order, all before any
+body read or budget spend: (1) Content-Type must be `application/json` →
+415 — this alone kills no-preflight CSRF, since a cross-origin "simple
+request" can only be text/plain or form-encoded, and JSON forces a CORS
+preflight we never answer; (2) browser provenance headers indicating
+another site (`Sec-Fetch-Site: cross-site`, or an `Origin` whose host
+mismatches the request Host) → 403 — ABSENT headers mean a programmatic
+caller (curl, server-to-server) and are deliberately allowed: a non-browser
+client can fake any header, so this check only exists to stop browser
+abuse; (3) tools whose manifest declares `auth.secrets` (BYOK-metered:
+web_scrape, tts) consume a per-tool hourly budget
+(`TOOLS_BYOK_TOOL_LIMIT`, default 60/h) on top of the per-IP burst limit —
+charged before dispatch, shared across all callers. Honest limitation:
+like the per-IP limiter it is process-local, so a multi-instance deploy
+multiplies the ceiling by instance count; a durable global budget needs a
+shared store (KV/Upstash). Keyless tools are behaviorally unchanged.
+
+**Cap arithmetic (`TOOL_UI_MAX_DATAURL_CHARS`).** The old 2.8 M-char cap
+was below a real worst-case clip: 2,500 input chars ≈ 150–180 s of speech
+at 128 kbps (~16 KB/s) ≈ 2.4–2.9 MB of mp3 ≈ 3.2–3.9 M base64 chars.
+Raised to 4.2 M (arithmetic in the providers.ts comment). The whitelist
+regex is also strict-form now: `[A-Za-z0-9+/]*={0,2}` — padding only at
+the end, and the JS end-anchor (no `m` flag) means `…AAAA\n<script>` can
+never smuggle a suffix.
+
+**Store bounds (client).** `message.toolUi` appends are bounded at append
+time: max 4 clips per message AND max 8.4 M total dataUrl chars (2 ×
+the 4.2 M server cap). Policy: refuse the NEWEST clip (console.warn) —
+earlier clips are already referenced by streamed prose, so evicting them
+would orphan that text. Mirrors the inline-images posture (session-only,
+stripped before localStorage).
+
+**Vendor Content-Type pinned (tts).** The ElevenLabs binding no longer
+embeds the vendor's Content-Type into the dataUrl verbatim: only
+`audio/(mpeg|wav|ogg)` pass; anything else hard-pins `audio/mpeg` (the
+requested format) with a warn — defense regardless of which seam consumes
+the payload.
+
+Specs: `tests/tools-bridge-security.spec.ts` (direct handler driving: 415,
+403, headerless-allowed, per-tool 429 across IPs — offline, no keys),
+plus new pins in `tool-ui.spec.ts` (newline/CRLF/padding anchors, store
+append bounds) and `elevenlabs-tts.spec.ts` (text/html → pinned
+audio/mpeg).

@@ -166,6 +166,24 @@ test("bridge-seam dispatch (invokeTool) DOES carry the UI audio payload", async 
   );
 });
 
+test("non-audio vendor Content-Type (text/html) is pinned to audio/mpeg in the dataUrl", async () => {
+  process.env.ELEVENLABS_API_KEY = FAKE_KEY;
+  // A compromised/odd vendor response must never choose the dataUrl mime: only
+  // audio/(mpeg|wav|ogg) pass through; anything else hard-pins audio/mpeg —
+  // the format the binding requested via Accept.
+  stubFetch(RECORDED_AUDIO, 200, "text/html; charset=utf-8");
+  const result = (await invokeTool("tts", "text_to_speech", { text: "hi" })) as Record<
+    string,
+    unknown
+  >;
+  expect(result.contentType).toBe("audio/mpeg");
+  const ui = result[UI_PAYLOAD_KEY] as { dataUrl: string; contentType: string };
+  expect(ui.contentType).toBe("audio/mpeg");
+  expect(ui.dataUrl).toBe(
+    `data:audio/mpeg;base64,${Buffer.from(RECORDED_AUDIO).toString("base64")}`,
+  );
+});
+
 test("explicit voiceId lands in the request path; junk voice ids are refused", async () => {
   process.env.ELEVENLABS_API_KEY = FAKE_KEY;
   const seen = stubFetch(RECORDED_AUDIO, 200, "audio/mpeg");

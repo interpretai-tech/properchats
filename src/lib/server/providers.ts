@@ -318,16 +318,23 @@ type ToolBudget = ReturnType<typeof createToolBudget>;
 // server-side whitelist — a binding (or a compromised vendor response) can
 // put ANYTHING under `_ui`, and the client renders the payload verbatim.
 
-/** v1 whitelist: a base64 `data:` URL for the three audio mimes we render. */
+/**
+ * v1 whitelist: a base64 `data:` URL for the three audio mimes we render.
+ * Strict base64 form: payload chars only, with `=` padding (max 2) allowed
+ * only at the very end. `$` in JS matches end-of-input only (no `m` flag), so
+ * an embedded newline — e.g. `…AAAA\n<script>` — can never smuggle a suffix.
+ */
 export const TOOL_UI_AUDIO_DATAURL_RE =
-  /^data:audio\/(mpeg|wav|ogg);base64,[A-Za-z0-9+/=]+$/;
+  /^data:audio\/(mpeg|wav|ogg);base64,[A-Za-z0-9+/]*={0,2}$/;
 
 /**
- * Max accepted `dataUrl` length, in characters. ~2 MB of audio is ~2.8 M
- * chars after base64's 4/3 expansion — comfortably above the largest clip the
- * tts size cap allows, and small enough not to choke the SSE stream.
+ * Max accepted `dataUrl` length, in characters. Sized to the worst-case clip
+ * the tts input cap allows: 2,500 chars ≈ 150–180 s of speech; at 128 kbps
+ * (~16 KB/s) that's ≈ 2.4–2.9 MB of mp3 ≈ 3.2–3.9 M chars after base64's 4/3
+ * expansion. 4.2 M covers the worst case with margin while still bounding the
+ * SSE frame.
  */
-export const TOOL_UI_MAX_DATAURL_CHARS = 2_800_000;
+export const TOOL_UI_MAX_DATAURL_CHARS = 4_200_000;
 
 /**
  * Validate a raw `_ui` payload into the one shape v1 streams to the client:

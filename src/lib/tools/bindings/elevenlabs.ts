@@ -44,6 +44,10 @@ const MODEL_ID = "eleven_multilingual_v2";
 /** list_voices is compact and capped: id + name + labels only. */
 const MAX_VOICES = 25;
 
+/** Audio mimes allowed into the `_ui` dataUrl (mirrors the server whitelist
+ *  in providers.ts); any other vendor Content-Type is pinned to audio/mpeg. */
+const AUDIO_CONTENT_TYPES = new Set(["audio/mpeg", "audio/wav", "audio/ogg"]);
+
 export const OVERSIZE_TTS_COPY =
   `\`text\` is too long for one text_to_speech call (max ${MAX_TTS_CHARS} characters). ` +
   "Shorten the text or split it into multiple calls and tell the user each clip is generated separately.";
@@ -116,7 +120,19 @@ export async function textToSpeech(
       body: JSON.stringify({ text, model_id: MODEL_ID }),
     },
   );
-  const contentType = res.headers.get("content-type")?.split(";")[0] || "audio/mpeg";
+  // Never trust the vendor's Content-Type into the dataUrl: anything outside
+  // the audio allowlist (the three mimes the _ui whitelist renders) is pinned
+  // to audio/mpeg — the format this binding requested via Accept. Defense in
+  // depth regardless of which seam consumes the payload.
+  const vendorType =
+    res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "audio/mpeg";
+  let contentType = vendorType;
+  if (!AUDIO_CONTENT_TYPES.has(vendorType)) {
+    console.warn(
+      `[tts] ElevenLabs returned unexpected content-type "${vendorType}" — pinning audio/mpeg`,
+    );
+    contentType = "audio/mpeg";
+  }
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.byteLength === 0) {
     throw new ToolError("ElevenLabs returned no audio for this request", 502);

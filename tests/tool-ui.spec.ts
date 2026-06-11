@@ -5,6 +5,7 @@ import {
   TOOL_UI_MAX_DATAURL_CHARS,
   type DispatchInput,
 } from "../src/lib/server/providers";
+import { appendToolUi, TOOL_UI_MAX_CLIPS_PER_MESSAGE } from "../src/lib/store";
 import type { StreamEvent } from "../src/lib/types";
 
 /**
@@ -163,16 +164,40 @@ test("a tool result carrying _ui audio emits ONE tool_ui event; the model-visibl
   expect(events.some((e) => e.type === "done")).toBe(true);
 });
 
-test("a non-audio _ui payload (wrong mime) is dropped: no tool_ui, no error, stream completes", async () => {
+test("a non-audio vendor mime is pinned by the binding: tool_ui flows with data:audio/mpeg", async () => {
   process.env.ELEVENLABS_API_KEY = "el-test-not-a-real-key";
-  // Vendor replies video/mp4 → the binding's dataUrl is data:video/mp4;… →
-  // fails the v1 whitelist → dropped with a console.warn, never an event.
+  // Vendor replies video/mp4 → the binding refuses to embed a non-allowlisted
+  // vendor Content-Type and hard-pins audio/mpeg (the requested format), so
+  // the payload passes the whitelist as data:audio/mpeg.
   stubLoopAndVendor(
     [
       openaiToolRound([{ id: "c1", name: TTS_CALL.name, args: JSON.stringify(TTS_CALL.args) }]),
       openaiTextRound("ok"),
     ],
     { body: RECORDED_AUDIO, contentType: "video/mp4" },
+  );
+  const events = await collect(makeInput());
+
+  const uiEvents = events.filter((e) => e.type === "tool_ui");
+  expect(uiEvents).toHaveLength(1);
+  const ui = uiEvents[0] as Extract<StreamEvent, { type: "tool_ui" }>;
+  expect(ui.payload.dataUrl).toBe(AUDIO_DATAURL); // pinned, not data:video/mp4
+  expect(events.some((e) => e.type === "error")).toBe(false);
+  expect(events.some((e) => e.type === "done")).toBe(true);
+});
+
+test("an oversized _ui payload is dropped: no tool_ui, no error, stream completes", async () => {
+  process.env.ELEVENLABS_API_KEY = "el-test-not-a-real-key";
+  // Vendor body big enough that the base64 dataUrl exceeds the server cap
+  // (4/3 expansion past TOOL_UI_MAX_DATAURL_CHARS) → fails the whitelist →
+  // dropped with a console.warn, never an event.
+  const oversize = new Uint8Array(Math.ceil((TOOL_UI_MAX_DATAURL_CHARS / 4) * 3) + 1024);
+  stubLoopAndVendor(
+    [
+      openaiToolRound([{ id: "c1", name: TTS_CALL.name, args: JSON.stringify(TTS_CALL.args) }]),
+      openaiTextRound("ok"),
+    ],
+    { body: oversize, contentType: "audio/mpeg" },
   );
   const events = await collect(makeInput());
 
@@ -200,6 +225,15 @@ test("sanitizeToolUiPayload: v1 accepts only bounded base64 audio data URLs", ()
   expect(sanitizeToolUiPayload({ dataUrl: `data:text/html;base64,${AUDIO_B64}` })).toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: "data:audio/mpeg,not-base64" })).toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: 'data:audio/mpeg;base64,abc"<script>' })).toBeNull();
+
+  // Anchor pins: an embedded newline/CRLF can never smuggle a suffix past the
+  // end anchor, and `=` padding is only legal at the very end (max 2).
+  expect(sanitizeToolUiPayload({ dataUrl: "data:audio/mpeg;base64,AAAA\n<script>" })).toBeNull();
+  expect(sanitizeToolUiPayload({ dataUrl: "data:audio/mpeg;base64,AAAA\r\n<script>" })).toBeNull();
+  expect(sanitizeToolUiPayload({ dataUrl: `${AUDIO_DATAURL}\n` })).toBeNull();
+  expect(sanitizeToolUiPayload({ dataUrl: "data:audio/mpeg;base64,AA==" })).not.toBeNull();
+  expect(sanitizeToolUiPayload({ dataUrl: "data:audio/mpeg;base64,AA==AA==" })).toBeNull();
+  expect(sanitizeToolUiPayload({ dataUrl: "data:audio/mpeg;base64,A===" })).toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: "https://example.com/a.mp3" })).toBeNull();
   expect(sanitizeToolUiPayload(AUDIO_DATAURL)).toBeNull();
   expect(sanitizeToolUiPayload(null)).toBeNull();
@@ -210,6 +244,33 @@ test("sanitizeToolUiPayload: v1 accepts only bounded base64 audio data URLs", ()
   const atCap = prefix + "A".repeat(TOOL_UI_MAX_DATAURL_CHARS - prefix.length);
   expect(sanitizeToolUiPayload({ dataUrl: atCap })).not.toBeNull();
   expect(sanitizeToolUiPayload({ dataUrl: atCap + "A" })).toBeNull();
+});
+
+// ── Client store: append-time bounds on a message's clips ──────────────────
+
+test("appendToolUi: per-message clip-count and total-chars caps refuse the newest clip", () => {
+  const clip = (n: number, dataUrl = AUDIO_DATAURL) => ({
+    tool: "tts",
+    fn: `text_to_speech_${n}`,
+    payload: { kind: "audio" as const, dataUrl },
+  });
+
+  // Count cap: a 5th clip is refused, the first four are untouched.
+  let list: ReturnType<typeof appendToolUi> | undefined;
+  for (let i = 1; i <= TOOL_UI_MAX_CLIPS_PER_MESSAGE; i++) list = appendToolUi(list, clip(i));
+  expect(list).toHaveLength(TOOL_UI_MAX_CLIPS_PER_MESSAGE);
+  const refused = appendToolUi(list, clip(5));
+  expect(refused).toHaveLength(TOOL_UI_MAX_CLIPS_PER_MESSAGE);
+  expect(refused.map((u) => u.fn)).toEqual(list!.map((u) => u.fn));
+
+  // Total-chars cap: two server-max clips fit exactly; a third is refused
+  // even though the count cap (4) still has room.
+  const maxClip = `data:audio/mpeg;base64,${"A".repeat(TOOL_UI_MAX_DATAURL_CHARS - "data:audio/mpeg;base64,".length)}`;
+  const two = appendToolUi(appendToolUi(undefined, clip(1, maxClip)), clip(2, maxClip));
+  expect(two).toHaveLength(2);
+  expect(appendToolUi(two, clip(3, maxClip))).toHaveLength(2);
+  // A small clip is also refused once the budget is exhausted.
+  expect(appendToolUi(two, clip(3))).toHaveLength(2);
 });
 
 // ── UI: the audio chip renders from a mocked stream ─────────────────────────
