@@ -684,3 +684,8 @@ model), structured pricing-details field (wants billing plane), image/
 file _ui kinds (wants a first consumer tool), and the full trending
 sweep (wants search access). Next binding candidates remain fal.ai /
 Shovels / Postiz from the shortlist when prioritized.
+
+### 2026-06-11 (later) — Gate check: unchanged
+
+PR #18 (private wave) still open; no owner gate moved. Surface remains
+stable per the previous entry; no autonomous work queued by design.
