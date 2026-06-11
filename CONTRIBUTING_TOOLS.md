@@ -45,6 +45,16 @@ API). All in `src/lib/tools/bindings/`.
   contentType, bytes, audio: "<omitted: N bytes audio/mpeg>"}`). Cap the
   *input* side too (tts refuses >2,500 chars with instructive copy).
 
+  **In-chat delivery**: when the model calls your tool from the chat loop,
+  payloads under `_ui` that pass the server whitelist are streamed to the
+  client as `tool_ui` SSE events and rendered by kind — currently audio only.
+  The whitelist (`sanitizeToolUiPayload`, `src/lib/server/providers.ts`)
+  accepts `{ kind?: "audio", dataUrl }` where `dataUrl` is a base64
+  `data:audio/(mpeg|wav|ogg)` URL within the ~2 MB cap; the `elevenlabs.ts`
+  `_ui` shape passes as-is (no explicit `kind` needed). Anything else is
+  dropped server-side with a `console.warn` — never a stream error — and your
+  tool degrades to bridge-only delivery.
+
 ## 1. Write the binding — `src/lib/tools/bindings/<vendor>.ts`
 
 (Name the file after the vendor/product you wrap — `firecrawl.ts` serves the

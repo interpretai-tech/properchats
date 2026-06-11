@@ -1,11 +1,12 @@
 import {
   manifestToToolDefs,
-  runToolDef,
+  parseToolDefName,
+  runToolDefWithUi,
   toolDefStatusText,
   toolDefTraceText,
   type ProviderToolDef,
 } from "../tools/defs";
-import type { Capability, Provider, Route, Source, StreamEvent } from "../types";
+import type { Capability, Provider, Route, Source, StreamEvent, ToolUiPayload } from "../types";
 
 /**
  * Server-side provider adapters. Each yields our unified `StreamEvent`s
@@ -310,12 +311,54 @@ function createToolBudget() {
 }
 type ToolBudget = ReturnType<typeof createToolBudget>;
 
+// ── tool_ui: in-chat delivery of UI-only tool payloads (`_ui`) ──────────────
+// A binding with binary output parks the heavy payload under UI_PAYLOAD_KEY;
+// `runToolDefWithUi` strips it from the model-visible result and hands the
+// raw payload back here. Before it touches the wire it must pass this
+// server-side whitelist — a binding (or a compromised vendor response) can
+// put ANYTHING under `_ui`, and the client renders the payload verbatim.
+
+/** v1 whitelist: a base64 `data:` URL for the three audio mimes we render. */
+export const TOOL_UI_AUDIO_DATAURL_RE =
+  /^data:audio\/(mpeg|wav|ogg);base64,[A-Za-z0-9+/=]+$/;
+
+/**
+ * Max accepted `dataUrl` length, in characters. ~2 MB of audio is ~2.8 M
+ * chars after base64's 4/3 expansion — comfortably above the largest clip the
+ * tts size cap allows, and small enough not to choke the SSE stream.
+ */
+export const TOOL_UI_MAX_DATAURL_CHARS = 2_800_000;
+
+/**
+ * Validate a raw `_ui` payload into the one shape v1 streams to the client:
+ * `{ kind: "audio", dataUrl }` with an audio/(mpeg|wav|ogg) base64 data URL
+ * of bounded size. An explicit `kind` other than "audio", a non-audio or
+ * malformed dataUrl, or an oversized payload returns null — the caller drops
+ * it with a console.warn and the stream continues (never an error event).
+ */
+export function sanitizeToolUiPayload(raw: unknown): ToolUiPayload | null {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const { kind, dataUrl } = raw as { kind?: unknown; dataUrl?: unknown };
+    if (
+      (kind === undefined || kind === "audio") &&
+      typeof dataUrl === "string" &&
+      dataUrl.length <= TOOL_UI_MAX_DATAURL_CHARS &&
+      TOOL_UI_AUDIO_DATAURL_RE.test(dataUrl)
+    ) {
+      return { kind: "audio", dataUrl };
+    }
+  }
+  return null;
+}
+
 /**
  * Run one budgeted community tool call. Yields the status/trace events (with
  * the model-emitted name resolved against the registry — never echoed
- * verbatim) and returns the result data to feed back to the model. `args` is
- * null when the model emitted malformed JSON: that becomes a structured
- * `{ error }` without dispatching and without spending budget.
+ * verbatim) plus, when the raw result carried a whitelisted `_ui` payload,
+ * ONE `tool_ui` event with it, and returns the model-visible result data to
+ * feed back to the model. `args` is null when the model emitted malformed
+ * JSON: that becomes a structured `{ error }` without dispatching and without
+ * spending budget.
  */
 async function* runBudgetedToolCall(
   budget: ToolBudget,
@@ -327,7 +370,20 @@ async function* runBudgetedToolCall(
   const gate = budget.take(indexInRound);
   if (!gate.ok) return { error: gate.error };
   yield { type: "status", text: toolDefStatusText(name) };
-  const result = await runToolDef(name, args);
+  const { result, ui } = await runToolDefWithUi(name, args);
+  if (ui !== undefined) {
+    // tool/fn come from the registry-resolved name (a `ui` payload implies the
+    // name resolved — runToolDefWithUi never returns one for an unknown tool).
+    const parsed = parseToolDefName(name);
+    const payload = sanitizeToolUiPayload(ui);
+    if (parsed && payload) {
+      yield { type: "tool_ui", tool: parsed.toolId, fn: parsed.fn, payload };
+    } else {
+      console.warn(
+        `[tool_ui] dropped unsupported _ui payload from ${parsed ? `${parsed.toolId}.${parsed.fn}` : "unknown tool"} (v1 accepts {kind:"audio", dataUrl: data:audio/(mpeg|wav|ogg);base64,…} ≤ ${TOOL_UI_MAX_DATAURL_CHARS} chars)`,
+      );
+    }
+  }
   yield { type: "trace", text: toolDefTraceText(name) };
   return result;
 }

@@ -85,9 +85,11 @@ function mergeSources(existing: Source[] | undefined, incoming: Source[]): Sourc
 }
 
 /**
- * Drop inline base64 (`data:`) images before persisting so a couple of generated
- * images can't exceed the localStorage quota and silently break persistence of
- * the entire chat tree. Remote (http) image URLs are small and kept.
+ * Drop inline base64 (`data:`) payloads — generated images and tool UI audio —
+ * before persisting so a couple of them can't exceed the localStorage quota and
+ * silently break persistence of the entire chat tree. Remote (http) image URLs
+ * are small and kept; tool UI payloads are all data URLs in v1, so they are
+ * deliberately session-only (like inline images, they vanish on refresh).
  */
 function stripInlineImages(nodes: Record<string, ConvNode>): Record<string, ConvNode> {
   let changed = false;
@@ -95,10 +97,20 @@ function stripInlineImages(nodes: Record<string, ConvNode>): Record<string, Conv
   for (const [id, node] of Object.entries(nodes)) {
     let nodeChanged = false;
     const messages = node.messages.map((m) => {
-      if (!m.images?.some((src) => src.startsWith("data:"))) return m;
+      const inlineImages = Boolean(m.images?.some((src) => src.startsWith("data:")));
+      const inlineToolUi = Boolean(m.toolUi?.some((u) => u.payload.dataUrl.startsWith("data:")));
+      if (!inlineImages && !inlineToolUi) return m;
       nodeChanged = true;
-      const kept = m.images.filter((src) => !src.startsWith("data:"));
-      return kept.length ? { ...m, images: kept } : { ...m, images: undefined };
+      let next = m;
+      if (inlineImages) {
+        const kept = m.images!.filter((src) => !src.startsWith("data:"));
+        next = { ...next, images: kept.length ? kept : undefined };
+      }
+      if (inlineToolUi) {
+        const kept = m.toolUi!.filter((u) => !u.payload.dataUrl.startsWith("data:"));
+        next = { ...next, toolUi: kept.length ? kept : undefined };
+      }
+      return next;
     });
     if (nodeChanged) {
       changed = true;
@@ -547,6 +559,13 @@ export const useStore = create<StoreState>()(
                   images: [...(m.images ?? []), src],
                 }));
               },
+              onToolUi: (ev) => {
+                setStatus(nodeId, null);
+                patchMessage(nodeId, assistantId, (m) => ({
+                  ...m,
+                  toolUi: [...(m.toolUi ?? []), { tool: ev.tool, fn: ev.fn, payload: ev.payload }],
+                }));
+              },
               onSources: (sources) =>
                 patchMessage(nodeId, assistantId, (m) => ({
                   ...m,
@@ -576,6 +595,7 @@ export const useStore = create<StoreState>()(
               m.content.trim() ||
               m.error ||
               (m.images && m.images.length) ||
+              (m.toolUi && m.toolUi.length) ||
               (m.sources && m.sources.length) ||
               m.reasoning?.trim() ||
               (m.activity && m.activity.length);
@@ -952,6 +972,7 @@ export const useStore = create<StoreState>()(
               ...assistant,
               content: "",
               images: undefined,
+              toolUi: undefined,
               sources: undefined,
               reasoning: undefined,
               activity: undefined,
@@ -988,6 +1009,7 @@ export const useStore = create<StoreState>()(
             ...m,
             content: "",
             images: undefined,
+            toolUi: undefined,
             sources: undefined,
             reasoning: undefined,
             activity: undefined,

@@ -111,27 +111,55 @@ function stripUiPayload(result: unknown): unknown {
   return result;
 }
 
+/** Outcome of one model tool call: the model-visible (stripped) result, plus
+ *  the raw `UI_PAYLOAD_KEY` payload when the binding produced one. */
+export interface ToolDefOutcome {
+  /** Model-visible result — `UI_PAYLOAD_KEY` already stripped. */
+  result: unknown;
+  /** Raw UI-only payload, untouched and unvalidated. The chat loop must
+   *  whitelist it (see `sanitizeToolUiPayload` in server/providers.ts) before
+   *  letting it anywhere near the client stream. */
+  ui?: unknown;
+}
+
 /**
- * Execute one model tool call through the registry dispatch seam. NEVER
+ * Execute one model tool call through the registry dispatch seam and return
+ * BOTH channels: the model-visible result and the raw UI-only payload. NEVER
  * throws: the chat loop must keep streaming, so failures are returned to the
- * model as `{ error }` data using our normalized copy.
+ * model as `{ error }` data using our normalized copy (and carry no `ui`).
+ */
+export async function runToolDefWithUi(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolDefOutcome> {
+  const parsed = parseToolDefName(name);
+  if (!parsed) return { result: { error: `Unknown tool: ${name}` } };
+  try {
+    const raw = await invokeTool(parsed.toolId, parsed.fn, args);
+    const ui =
+      raw && typeof raw === "object" && !Array.isArray(raw) && UI_PAYLOAD_KEY in raw
+        ? (raw as Record<string, unknown>)[UI_PAYLOAD_KEY]
+        : undefined;
+    return { result: stripUiPayload(raw) ?? null, ...(ui !== undefined ? { ui } : {}) };
+  } catch (e) {
+    // ToolError messages are written by us (the binding / registry); anything
+    // else gets generic copy so raw vendor prose never reaches the model/UI.
+    return {
+      result: { error: e instanceof ToolError ? e.message : "Tool invocation failed" },
+    };
+  }
+}
+
+/**
+ * Execute one model tool call and return only the model-visible result
+ * (`UI_PAYLOAD_KEY` stripped). Thin wrapper over `runToolDefWithUi` for
+ * callers that don't deliver UI payloads.
  */
 export async function runToolDef(
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  const parsed = parseToolDefName(name);
-  if (!parsed) return { error: `Unknown tool: ${name}` };
-  try {
-    const result = await invokeTool(parsed.toolId, parsed.fn, args);
-    return stripUiPayload(result) ?? null;
-  } catch (e) {
-    // ToolError messages are written by us (the binding / registry); anything
-    // else gets generic copy so raw vendor prose never reaches the model/UI.
-    return {
-      error: e instanceof ToolError ? e.message : "Tool invocation failed",
-    };
-  }
+  return (await runToolDefWithUi(name, args)).result;
 }
 
 /**

@@ -40,6 +40,7 @@ export interface StreamHandlers {
   onTrace?: (text: string) => void;
   onStatus?: (text: string) => void;
   onImage?: (image: { b64?: string; url?: string; mime?: string }) => void;
+  onToolUi?: (ev: Extract<StreamEvent, { type: "tool_ui" }>) => void;
   onSources?: (sources: Source[]) => void;
   onDone?: (ev: Extract<StreamEvent, { type: "done" }>) => void;
   onError?: (message: string) => void;
@@ -93,6 +94,9 @@ export async function streamChat(
           break;
         case "image":
           handlers.onImage?.({ b64: ev.b64, url: ev.url, mime: ev.mime });
+          break;
+        case "tool_ui":
+          handlers.onToolUi?.(ev);
           break;
         case "sources":
           handlers.onSources?.(ev.sources);

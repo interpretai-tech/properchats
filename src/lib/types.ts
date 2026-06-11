@@ -28,6 +28,17 @@ export interface Source {
   title?: string;
 }
 
+/**
+ * A whitelisted UI-only tool payload streamed to the chat client as a
+ * `tool_ui` event. v1 supports audio only: `dataUrl` is a validated
+ * `data:audio/(mpeg|wav|ogg);base64,…` URL (see `sanitizeToolUiPayload` in
+ * `server/providers.ts` — anything else is dropped server-side, never sent).
+ */
+export interface ToolUiPayload {
+  kind: "audio";
+  dataUrl: string;
+}
+
 /** Input modality of an attachment; also used to restrict which models can read it. */
 export type Modality = "text" | "image" | "audio" | "video" | "pdf";
 
@@ -63,6 +74,13 @@ export interface Message {
   reasoning?: string;
   /** Discrete tool activity steps, e.g. "Searched the web for …", "Ran code". */
   activity?: string[];
+  /**
+   * UI-only payloads produced by community tool calls this turn (e.g. a TTS
+   * audio clip), delivered via `tool_ui` stream events. `tool`/`fn` are
+   * registry-resolved ids, never model prose. Inline `data:` payloads are
+   * stripped at persist time (same localStorage-quota rule as `images`).
+   */
+  toolUi?: { tool: string; fn: string; payload: ToolUiPayload }[];
   /** User-attached input media (image/video/audio/pdf) on a user turn. */
   attachments?: MediaAttachment[];
   /** Set on an assistant turn that failed; holds the error text. */
@@ -138,6 +156,8 @@ export type StreamEvent =
   | { type: "status"; text: string }
   /** An image produced by an image capability (base64 or URL). */
   | { type: "image"; b64?: string; url?: string; mime?: string }
+  /** A whitelisted UI-only payload from a community tool call (audio in v1). */
+  | { type: "tool_ui"; tool: string; fn: string; payload: ToolUiPayload }
   /** Citations gathered during this turn. */
   | { type: "sources"; sources: Source[] }
   | { type: "done"; usage?: { input?: number; output?: number }; stopReason?: string | null }

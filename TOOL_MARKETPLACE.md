@@ -593,3 +593,30 @@ pending a structured field. Deferred deliberately: a structured
 pricing-details manifest field (wants the metering/billing planes to
 mature first) and live-or-skip bridge BYOK tests (inherent to not
 shipping keys in CI). Registry header drift fixed in 2fc585e.
+
+### 2026-06-11 — `_ui` pipeline closed end-to-end: `tool_ui` stream events + in-chat audio chip
+
+The split-channel precedent from the TTS binding had a last-mile gap: the
+model loop correctly stripped `_ui` (defs.ts), but nothing delivered the
+payload to the chat client — only direct `POST /api/tools/tts` callers got
+the audio, so in-chat TTS was inaudible. Closed (the follow-up the TTS entry
+anticipated): `runBudgetedToolCall` now reads the RAW result via
+`runToolDefWithUi` (defs.ts; `runToolDef` is a thin wrapper over it) and,
+when `_ui` is present AND passes the server whitelist, emits ONE `tool_ui`
+StreamEvent `{tool, fn, payload}` alongside the existing status/trace events
+— tool/fn registry-resolved, never model prose. The whitelist
+(`sanitizeToolUiPayload`, providers.ts) is deliberately narrow in v1:
+`{kind: "audio", dataUrl}` only, where dataUrl matches
+`^data:audio/(mpeg|wav|ogg);base64,[A-Za-z0-9+/=]+$` and is ≤ ~2 MB
+(2.8 M chars); anything else — wrong kind/mime, junk chars, oversize —
+is dropped with a `console.warn`, never a stream error, so hostile or
+oversized binding output can't reach the wire. Client side: the store
+attaches `tool_ui` payloads to the in-flight assistant message
+(`message.toolUi`, same extras pattern as `images`/`activity`) and
+MessageItem renders an audio chip — native `<audio controls>` with a
+"{tool} audio" label, no autoplay. Persistence mirrors inline images:
+`data:` payloads are stripped before localStorage (quota), so clips are
+session-only by design. The `_ui` pipeline is now end-to-end:
+binding → strip → whitelist → SSE → audio chip; next kinds: image,
+file-download. Specs in `tests/tool-ui.spec.ts` (stubbed loop + vendor,
+whitelist pins, mocked-stream UI render).

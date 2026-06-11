@@ -421,6 +421,29 @@ export function MessageItem({
               ))}
             </div>
           )}
+          {/* UI-only tool payloads (tool_ui events): an audio chip per clip.
+              Server-whitelisted (audio data: URLs only), labeled with the
+              registry-resolved tool id, never autoplayed. Session-only: data:
+              payloads are stripped at persist time like inline images. */}
+          {message.toolUi && message.toolUi.length > 0 && (
+            <div className="mt-3 flex flex-col gap-2">
+              {message.toolUi.map((u, i) =>
+                u.payload.kind === "audio" ? (
+                  <div
+                    key={i}
+                    data-testid="tool-audio"
+                    className="flex max-w-[420px] flex-col gap-1.5 rounded-lg border border-line bg-surface px-3 py-2"
+                  >
+                    <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
+                      <Music size={12} className="text-accent" />
+                      {u.tool} audio
+                    </span>
+                    <audio controls preload="metadata" src={u.payload.dataUrl} className="w-full" />
+                  </div>
+                ) : null,
+              )}
+            </div>
+          )}
           {/* A generated image still inline (data:) after streaming won't be
               persisted (inline images are stripped to protect localStorage
               quota), so warn the user it may vanish on refresh. */}
