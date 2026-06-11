@@ -9,7 +9,9 @@
  * separately). What is real today: each webhook-bound tool below is callable
  * end-to-end via `POST /api/tools/<id>` with `{ "function": "...", "args": {...} }`.
  *
- * All three launch tools are open-source, keyless, and individually authored —
+ * Every tool here is open-source and individually authored — the launch trio
+ * is keyless; later additions (web_scrape, tts) are BYOK and strip when
+ * unconfigured —
  * see TOOL-OPENSOURCE-properchats.md at the repo root for attribution and
  * license notes.
  */
