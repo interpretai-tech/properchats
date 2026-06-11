@@ -44,15 +44,37 @@ export const MAX_POST_CHANNELS = 5;
 
 /** The review window: scheduleAt must be at least this far in the future. */
 export const MIN_SCHEDULE_LEAD_MS = 10 * 60_000;
+/**
+ * Skew pad on top of the lead window: ~60s of slack for client/server clock
+ * skew plus the /integrations lookup latency between our check and Postiz's
+ * own "is this in the future" check. The user-facing copy still says "10
+ * minutes" — the pad only stops a right-at-the-boundary scheduleAt from
+ * passing here and landing inside (or behind) the window by the time the
+ * vendor sees it.
+ */
+export const SCHEDULE_SKEW_PAD_MS = 60_000;
 /** And no further out than a year — beyond that it's almost surely a typo. */
 export const MAX_SCHEDULE_AHEAD_MS = 365 * 24 * 60 * 60_000;
 
 export const SCHEDULE_ONLY_COPY =
   "create_post only schedules posts — `scheduleAt` must be an ISO 8601 datetime " +
-  "at least 10 minutes in the future (and at most 1 year out). Immediate posting " +
-  "is deliberately unsupported: pick a time 10+ minutes from now, then tell the " +
-  "user the post is scheduled and can still be reviewed or cancelled in Postiz " +
-  "before it goes live.";
+  "with an explicit timezone, at least 10 minutes in the future (and at most " +
+  "1 year out). Immediate posting is deliberately unsupported: pick a time 10+ " +
+  "minutes from now, then tell the user the post is scheduled and can still be " +
+  "reviewed or cancelled in Postiz before it goes live.";
+
+/**
+ * A scheduleAt without an explicit timezone is ambiguous: Date.parse reads it
+ * in the SERVER's zone, which is almost never the user's — a "6pm" post could
+ * silently go out at 3am. Require a trailing Z or ±HH[:]MM offset.
+ */
+export const TZ_REQUIRED_COPY =
+  "`scheduleAt` must include a timezone — end it with \"Z\" or a ±HH:MM " +
+  'offset, e.g. "2026-06-12T18:00:00Z" or "2026-06-12T18:00:00-07:00". ' +
+  "Without one the time is ambiguous and the post could go out at the wrong hour.";
+
+/** Trailing explicit-offset matcher: "Z", "+05:30", "-0700". */
+const TZ_OFFSET_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
 
 /** Channel ids are vendor tokens (cuid-style); they land in request bodies,
  *  so refuse anything that isn't a plain token. */
@@ -112,7 +134,11 @@ async function fetchIntegrations(): Promise<RawIntegration[]> {
   } catch {
     throw new ToolError("Postiz returned an unreadable channel list", 502);
   }
-  return Array.isArray(body) ? (body as RawIntegration[]) : [];
+  const rows = Array.isArray(body) ? (body as RawIntegration[]) : [];
+  // Disabled channels are filtered HERE, the one place both consumers share:
+  // they never appear in list_channels output AND never resolve in
+  // create_post's platformById lookup — a disabled channel is unpostable.
+  return rows.filter((row) => row.disabled !== true);
 }
 
 export interface ChannelSummary {
@@ -179,10 +205,16 @@ export async function createPost(
   // ── SCHEDULE-ONLY enforcement (see module header) ─────────────────────────
   const scheduleAtRaw = typeof args.scheduleAt === "string" ? args.scheduleAt.trim() : "";
   const scheduleMs = scheduleAtRaw ? Date.parse(scheduleAtRaw) : NaN;
+  if (!scheduleAtRaw || Number.isNaN(scheduleMs)) {
+    throw new ToolError(SCHEDULE_ONLY_COPY, 400);
+  }
+  // Parseable but timezone-less → its own instructive refusal (see TZ_REQUIRED_COPY).
+  if (!TZ_OFFSET_RE.test(scheduleAtRaw)) {
+    throw new ToolError(TZ_REQUIRED_COPY, 400);
+  }
   if (
-    !scheduleAtRaw ||
-    Number.isNaN(scheduleMs) ||
-    scheduleMs < Date.now() + MIN_SCHEDULE_LEAD_MS ||
+    // MIN lead + ~60s skew pad (clock skew + lookup latency; copy unchanged).
+    scheduleMs < Date.now() + MIN_SCHEDULE_LEAD_MS + SCHEDULE_SKEW_PAD_MS ||
     scheduleMs > Date.now() + MAX_SCHEDULE_AHEAD_MS
   ) {
     throw new ToolError(SCHEDULE_ONLY_COPY, 400);

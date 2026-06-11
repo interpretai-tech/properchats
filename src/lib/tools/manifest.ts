@@ -68,6 +68,16 @@ export interface ToolManifest {
 
   // ── Auth & secrets ────────────────────────────────────────────────────────
   auth: {
+    /**
+     * Whether using this tool should require a signed-in user. HONESTY NOTE:
+     * this repo ships no session/auth system, so today the flag is
+     * *declarative* — nothing in this codebase enforces it. It exists so (a)
+     * a deploying app that does have sessions can gate on it, and (b) tools
+     * with SHARED AUTHORITY (one deployer-scoped key acting for every user,
+     * e.g. social_post's POSTIZ_API_KEY) are flagged at the manifest level
+     * rather than discovered in an incident. Set it `true` for any
+     * side-effecting BYOK tool whose key is shared across users.
+     */
     requiresSignIn: boolean;
     /** Env var NAMES the binding needs server-side (never values). */
     secrets?: string[];
@@ -139,12 +149,16 @@ export const TOOL_NAME_SEP = "__";
  */
 export const UI_PAYLOAD_KEY = "_ui";
 
-/** Error with an HTTP status hint, thrown by bindings and the registry. */
+/** Error with an HTTP status hint, thrown by bindings and the registry.
+ *  `retryAfter` (seconds) rides along on 429s so the bridge route can emit a
+ *  Retry-After header without re-deriving limiter state. */
 export class ToolError extends Error {
   status: number;
-  constructor(message: string, status = 400) {
+  retryAfter?: number;
+  constructor(message: string, status = 400, retryAfter?: number) {
     super(message);
     this.name = "ToolError";
     this.status = status;
+    if (retryAfter !== undefined) this.retryAfter = retryAfter;
   }
 }

@@ -343,6 +343,45 @@ test("an { error } tool result feeds back and the loop continues", async () => {
   expect(events.some((e) => e.type === "done")).toBe(true);
 });
 
+// ── One-seam BYOK hourly budget inside the chat loop ────────────────────────
+
+test("BYOK hourly budget exhausted mid-loop → structured { error }, loop continues", async () => {
+  // The budget lives in invokeTool (registry.ts) — the same seam the chat
+  // loop dispatches through — so a model turn cannot bypass the bridge's
+  // ceiling. social_post (category "social") with limit 1: the round's first
+  // call consumes the budget, the second must come back as { error } data
+  // and the stream must keep going to a clean done.
+  const savedKey = process.env.POSTIZ_API_KEY;
+  const savedLimit = process.env.TOOLS_SOCIAL_TOOL_LIMIT;
+  process.env.POSTIZ_API_KEY = "pz-test-not-a-real-key";
+  process.env.TOOLS_SOCIAL_TOOL_LIMIT = "1";
+  try {
+    const seen = stubProvider([
+      openaiToolRound([
+        { id: "c1", name: "social_post__list_channels", args: "{}" },
+        { id: "c2", name: "social_post__list_channels", args: "{}" },
+      ]),
+      openaiTextRound("degraded gracefully"),
+    ]);
+    const events = await collect(makeInput("openai"));
+
+    const toolMsgs = (seen[seen.length - 1].body.messages as { role: string; content?: string }[])
+      .filter((m) => m.role === "tool");
+    expect(toolMsgs).toHaveLength(2);
+    // Second call refused by the shared hourly budget — structured, ours.
+    expect(toolMsgs[1].content).toContain("hourly budget");
+    // The loop was never killed: it synthesized and finished cleanly.
+    expect(events.some((e) => e.type === "delta" && e.text === "degraded gracefully")).toBe(true);
+    expect(events.some((e) => e.type === "done")).toBe(true);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+  } finally {
+    if (savedKey === undefined) delete process.env.POSTIZ_API_KEY;
+    else process.env.POSTIZ_API_KEY = savedKey;
+    if (savedLimit === undefined) delete process.env.TOOLS_SOCIAL_TOOL_LIMIT;
+    else process.env.TOOLS_SOCIAL_TOOL_LIMIT = savedLimit;
+  }
+});
+
 // ── F11: status line never echoes the model-emitted name ────────────────────
 
 test("unknown tool names show a generic status line, not model prose", async () => {

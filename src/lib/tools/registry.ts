@@ -15,6 +15,7 @@
  * see TOOL-OPENSOURCE-properchats.md at the repo root for attribution and
  * license notes.
  */
+import { rateLimit } from "@/lib/server/rateLimit";
 import { TOOL_NAME_SEP, ToolError, type ToolManifest } from "./manifest";
 import { calculate } from "./bindings/calculator";
 import { listVoices, textToSpeech } from "./bindings/elevenlabs";
@@ -288,11 +289,12 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     display: {
       label: "Social post",
       hint:
-        "Schedule posts to connected social accounts via Postiz (BYOK — self-host free under AGPL, cloud from $29/mo; vendor caps ~90-100 create-calls/hour)",
+        "Schedule posts to connected social accounts via Postiz (BYOK — self-host free under AGPL, cloud from $29/mo; vendor caps ~90-100 create-calls/hour). " +
+        "SHARED AUTHORITY: one Postiz workspace per deployment — every user of this server posts through the same connected accounts.",
       icon: "Share2",
     },
     description:
-      "list_channels returns the user's connected social accounts as " +
+      "list_channels returns the connected social accounts as " +
       "{id, platform, name} rows; create_post schedules ONE text post to 1-5 " +
       "of those channels at `scheduleAt`. Call list_channels first and use " +
       "ids from it; never invent channel ids. SCHEDULING IS MANDATORY: posts " +
@@ -300,7 +302,10 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
       "cancel in Postiz; never claim a post was published immediately — " +
       "immediate posting is deliberately unsupported. After a successful " +
       "create_post, tell the user when the post is scheduled for and that " +
-      "they can still cancel it in Postiz.",
+      "they can still cancel it in Postiz. SHARING MODEL: the server is " +
+      "configured with ONE deployer-scoped Postiz workspace — all users of " +
+      "this deployment share its connected accounts; there are no per-user " +
+      "accounts here.",
     binding: {
       kind: "webhook",
       endpoint: "/api/tools/social_post",
@@ -331,7 +336,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
               scheduleAt: {
                 type: "string",
                 description:
-                  'ISO 8601 datetime to publish at, e.g. "2026-06-12T15:30:00Z". Must be at least 10 minutes in the future and at most 1 year out.',
+                  'ISO 8601 datetime to publish at, e.g. "2026-06-12T15:30:00Z". Must include an explicit timezone (a trailing "Z" or ±HH:MM offset), be at least 10 minutes in the future, and at most 1 year out.',
               },
             },
             required: ["text", "channelIds", "scheduleAt"],
@@ -340,7 +345,12 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
       ],
     },
     providers: ["anthropic", "openai", "gemini"],
-    auth: { requiresSignIn: false, secrets: ["POSTIZ_API_KEY"] },
+    // requiresSignIn is declarative today (see the manifest contract): this
+    // repo has no session system to enforce it, but social_post is SHARED
+    // AUTHORITY — POSTIZ_API_KEY is deployer-scoped, so any caller acts on
+    // the deployment's real accounts. Flagging it true so a session-bearing
+    // host app gates it, and so the sharing model is manifest-visible.
+    auth: { requiresSignIn: true, secrets: ["POSTIZ_API_KEY"] },
     policy: { allowance: UNMETERED, meterMode: "per-turn" },
     upstream: {
       project: "Postiz",
@@ -420,9 +430,59 @@ function meterToolCall(manifest: ToolManifest, fn: string): void {
 }
 
 /**
+ * One-seam BYOK hourly budget. History: this ceiling used to live only in the
+ * bridge route (`/api/tools/[tool]`), which meant the chat loop's dispatch
+ * path (`runToolDefWithUi` → `invokeTool`) bypassed it entirely — an injected
+ * conversation could burn a metered key up to the vendor's own cap. It now
+ * lives HERE, on the registry's single dispatch seam, so bridge calls and
+ * model tool-calls drain the SAME per-tool counter (`tools:byok:<id>`).
+ *
+ * Limits (process-local, like rateLimit.ts — a multi-instance deploy
+ * multiplies the effective ceiling by instance count):
+ * - default BYOK tools: TOOLS_BYOK_TOOL_LIMIT calls/hour (60)
+ * - category "social":  TOOLS_SOCIAL_TOOL_LIMIT calls/hour (15) — tools that
+ *   post to real accounts get a tighter bound than scraping; a runaway loop
+ *   should hit our wall long before the vendor's ~90-100/h cap.
+ *
+ * The budget is charged BEFORE the handler runs (a refused call must not be
+ * free to retry into the vendor) but AFTER name resolution (probing unknown
+ * functions doesn't drain it). Keyless tools are unaffected.
+ */
+const TOOLS_BYOK_TOOL_WINDOW_MS = 3_600_000;
+
+/** Hourly call ceiling for one BYOK tool (env read per call, test-tunable). */
+export function byokToolHourlyLimit(manifest: ToolManifest): number {
+  if (manifest.category === "social") {
+    const n = Number(process.env.TOOLS_SOCIAL_TOOL_LIMIT);
+    return Number.isFinite(n) && n > 0 ? n : 15;
+  }
+  const n = Number(process.env.TOOLS_BYOK_TOOL_LIMIT);
+  return Number.isFinite(n) && n > 0 ? n : 60;
+}
+
+function chargeByokBudget(manifest: ToolManifest): void {
+  if (!manifest.auth.secrets?.length) return; // keyless: no metered key to burn
+  const budget = rateLimit(
+    `tools:byok:${manifest.id}`,
+    byokToolHourlyLimit(manifest),
+    TOOLS_BYOK_TOOL_WINDOW_MS,
+  );
+  if (!budget.ok) {
+    // In the chat loop this ToolError becomes a structured { error } result
+    // (runToolDefWithUi never throws); on the bridge it becomes a 429 with
+    // Retry-After. Either way the message is ours, never limiter internals.
+    throw new ToolError(
+      `The ${manifest.id} tool has reached its hourly budget. Try again later.`,
+      429,
+      budget.retryAfter,
+    );
+  }
+}
+
+/**
  * Invoke one declared function of a registered tool. Throws `ToolError` with
- * an HTTP status hint (404 unknown tool/function, 400 bad args, 501 binding
- * not locally invokable, 502 upstream failure).
+ * an HTTP status hint (404 unknown tool/function, 400 bad args, 429 hourly
+ * budget exhausted, 501 binding not locally invokable, 502 upstream failure).
  */
 export async function invokeTool(
   toolId: string,
@@ -444,6 +504,7 @@ export async function invokeTool(
   if (!handler) {
     throw new ToolError(`Function "${functionName}" of "${toolId}" has no bridge handler yet`, 501);
   }
+  chargeByokBudget(manifest); // throws 429 when exhausted — never reaches the handler
   meterToolCall(manifest, functionName);
   return handler(args);
 }

@@ -783,3 +783,50 @@ API_LIMIT (vendor caps ~90-100 create-calls/h, noted in display.hint),
 (4) delete-500 normalization if delete_post is ever added; media posts
 (POST /upload) and per-platform settings schemas are explicitly out of
 v1 scope.
+
+### 2026-06-11 — Hardening pass: one-seam BYOK budget, social category cap, shared-authority rule
+
+Critic findings on the social_post surface, fixed:
+
+**Budget bypass (real bug).** The BYOK hourly budget
+(`TOOLS_BYOK_TOOL_LIMIT`, 60/h per tool) lived only in the bridge route
+(`/api/tools/[tool]`) — but the chat loop dispatches via
+`runToolDefWithUi` → `invokeTool`, which never touched it, so an injected
+conversation could schedule posts up to the vendor's ~90-100/h cap. The
+budget now lives in `invokeTool` itself (registry.ts) — the registry's
+self-described one seam — so bridge calls AND model tool-calls drain the
+same `tools:byok:<id>` counter; the route dropped its duplicate check
+(its 429 now flows from the seam's `ToolError`, whose `retryAfter`
+becomes the Retry-After header). New: `category: "social"` tools get a
+tighter default — `TOOLS_SOCIAL_TOOL_LIMIT`, 15/h (posting to real
+accounts deserves a smaller blast radius than scraping). Inside the chat
+loop a budget refusal surfaces as structured `{ error }` data and the
+loop continues (spec-pinned in provider-loops). Still process-local,
+like all rateLimit.ts ceilings.
+
+**Shared authority (real bug for multi-user deployments).**
+POSTIZ_API_KEY is deployer-scoped: any chat user can list/post to ALL
+connected accounts. The manifest now says so plainly (display.hint +
+description: one Postiz workspace per deployment, all users share its
+connected accounts) and sets `auth.requiresSignIn: true`. Honesty note:
+`requiresSignIn` is *declarative* — this repo ships no session system,
+so nothing here can enforce it; the flag exists for session-bearing host
+apps and as a manifest-level marker. CONTRIBUTING_TOOLS.md gained a
+"shared-authority tools" rule: side-effecting BYOK tools must declare
+their sharing model.
+
+**Smells.** (1) TZ-less `scheduleAt` is now refused with instructive
+copy (a timezone-less ISO string parses in the SERVER's zone — a "6pm"
+post could go out at 3am); a trailing `Z` or ±HH:MM offset is required.
+(2) The 10-minute schedule lead gained a ~60s skew pad (clock skew +
+/integrations lookup latency; user-facing copy unchanged). (3) Postiz
+integrations with `disabled: true` are filtered at the shared
+`fetchIntegrations` seam — absent from list_channels AND unpostable via
+create_post.
+
+Specs added (postiz-social + provider-loops): model-supplied
+`type:"now"` still wires as `type:"schedule"`; TZ-less scheduleAt
+rejected with zero fetches; no-key forced create_post → normalized
+`{ error }`, zero fetches; budget exhaustion at the seam (zero vendor
+calls) and mid-chat-loop (loop continues to a clean done); disabled
+channel unlisted and unpostable; social default 15/h vs BYOK 60/h.

@@ -31,6 +31,22 @@ API). All in `src/lib/tools/bindings/`.
 - **Keyless or BYOK**: the binding must work with no secret, or with secrets
   resolved from env var **names** declared in the manifest (`auth.secrets`).
   Never hardcode or log a secret.
+- **Shared-authority tools must declare their sharing model.** A BYOK secret
+  is *deployer-scoped*: one key, every user of the deployment. For read-only
+  tools that's just billing; for **side-effecting** tools (posting, sending,
+  deleting) it means any chat user wields the deployer's authority — e.g.
+  `social_post`'s `POSTIZ_API_KEY` lets every user post to ALL of the
+  workspace's connected accounts. Such a tool must (a) state the sharing
+  model plainly in `display.hint` and the agent-facing `description`
+  ("one <vendor> workspace per deployment; all users share its connected
+  accounts"), and (b) set `auth.requiresSignIn: true` — that flag is
+  *declarative* today (this repo ships no session system; a session-bearing
+  host app is what enforces it), but it marks shared authority at the
+  manifest level instead of leaving it to be discovered in an incident.
+  Side-effecting categories also get a tighter hourly budget: `category:
+  "social"` tools draw from `TOOLS_SOCIAL_TOOL_LIMIT` (default 15/h) rather
+  than the generic BYOK `TOOLS_BYOK_TOOL_LIMIT` (default 60/h), enforced at
+  the `invokeTool` seam for bridge and chat-loop callers alike.
 - **License-compatible**: if you wrap an open-source project or library,
   fill the manifest's `upstream` block (project, repo, license, author) and
   honor its license.

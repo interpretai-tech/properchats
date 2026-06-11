@@ -14,25 +14,17 @@ import { getToolManifest, invokeTool } from "@/lib/tools/registry";
  *
  * POST is gated: JSON-only Content-Type (415), no cross-site browser callers
  * (403 when Origin/Sec-Fetch-Site say another site; absent headers = allowed
- * programmatic caller), per-IP burst limit, and a per-tool hourly budget for
- * BYOK-metered tools. See the constants and helpers below.
+ * programmatic caller), and a per-IP burst limit. The per-tool hourly budget
+ * for BYOK-metered tools (TOOLS_BYOK_TOOL_LIMIT / TOOLS_SOCIAL_TOOL_LIMIT)
+ * is NOT here anymore: it moved into `invokeTool` (registry.ts) — the one
+ * dispatch seam — so bridge calls and chat-loop model tool-calls drain the
+ * same counter. A budget 429 surfaces below via the thrown `ToolError`
+ * (whose `retryAfter` becomes the Retry-After header).
  */
 
 /** Burst backstop, per IP across all tools (process-local; see rateLimit.ts). */
 const TOOLS_BURST_LIMIT = Number(process.env.TOOLS_BURST_LIMIT) || 30;
 const TOOLS_BURST_WINDOW_MS = 60_000;
-
-/**
- * Stricter budget for BYOK-metered tools (manifests declaring auth.secrets):
- * those calls burn a metered vendor key, so on top of the per-IP burst limit
- * each such tool gets a process-local calls-per-hour ceiling across ALL
- * callers. Crude but it bounds single-instance key burn; like rateLimit.ts it
- * is process-local, so a multi-instance / serverless deploy multiplies the
- * effective ceiling by the instance count — a durable global budget needs a
- * shared store (Vercel KV / Upstash). Keyless tools are unaffected.
- */
-const TOOLS_BYOK_TOOL_LIMIT = Number(process.env.TOOLS_BYOK_TOOL_LIMIT) || 60;
-const TOOLS_BYOK_TOOL_WINDOW_MS = 3_600_000;
 
 /**
  * Browser cross-site posture: this route is unauthenticated by design (the
@@ -110,24 +102,11 @@ export async function POST(
     );
   }
 
-  // BYOK-metered tools additionally consume the per-tool hourly budget (see
-  // TOOLS_BYOK_TOOL_LIMIT above) — every accepted call may bill the host's
-  // vendor key, so the per-IP backstop alone is not enough.
+  // BYOK-metered tools additionally consume a per-tool hourly budget — but
+  // that check now lives inside `invokeTool` (one seam, shared with the chat
+  // loop); here we only resolve the manifest for the 404.
   const manifest = getToolManifest(tool);
   if (!manifest) return Response.json({ error: `Unknown tool: ${tool}` }, { status: 404 });
-  if (manifest.auth.secrets?.length) {
-    const budget = rateLimit(
-      `tools:byok:${manifest.id}`,
-      TOOLS_BYOK_TOOL_LIMIT,
-      TOOLS_BYOK_TOOL_WINDOW_MS,
-    );
-    if (!budget.ok) {
-      return Response.json(
-        { error: `The ${manifest.id} tool has reached its hourly budget. Try again later.` },
-        { status: 429, headers: { "Retry-After": String(budget.retryAfter) } },
-      );
-    }
-  }
 
   let body: Record<string, unknown>;
   try {
@@ -148,7 +127,10 @@ export async function POST(
     return Response.json({ ok: true, tool, function: fn, result });
   } catch (e) {
     if (e instanceof ToolError) {
-      return Response.json({ ok: false, error: e.message }, { status: e.status });
+      // Budget/limiter 429s carry a retryAfter hint; pass it through.
+      const headers =
+        e.retryAfter !== undefined ? { "Retry-After": String(e.retryAfter) } : undefined;
+      return Response.json({ ok: false, error: e.message }, { status: e.status, headers });
     }
     return Response.json(
       { ok: false, error: e instanceof Error ? e.message : "Tool invocation failed" },

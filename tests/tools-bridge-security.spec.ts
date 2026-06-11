@@ -14,11 +14,14 @@ import { POST } from "../src/app/api/tools/[tool]/route";
  *   caller, allowed by design (the bridge is a public API).
  * - BYOK-metered tools (manifest auth.secrets) carry a per-tool hourly budget
  *   on top of the per-IP burst limit → 429 once exhausted, regardless of IP.
+ *   The budget is enforced at the `invokeTool` seam (registry.ts) — shared
+ *   with the chat loop's dispatch path, not duplicated in this route — and
+ *   its ToolError's retryAfter becomes the 429's Retry-After header.
  *
  * The budget tests use the tts tool with ELEVENLABS_API_KEY removed: each
  * accepted call fails fast with the binding's 503 (never a network call) but
  * still consumes the per-tool budget, which is deliberately charged BEFORE
- * dispatch.
+ * the binding handler runs.
  */
 
 const realKey = process.env.ELEVENLABS_API_KEY;
@@ -88,6 +91,12 @@ test("BYOK tools (auth.secrets) hit the per-tool hourly budget with 429, across 
   const limit = Number(process.env.TOOLS_BYOK_TOOL_LIMIT) || 60;
   const body = JSON.stringify({ function: "text_to_speech", args: { text: "hi" } });
 
+  // The budget bucket lives at the invokeTool seam and is shared across the
+  // whole process — other specs in this worker (e.g. elevenlabs-tts) may have
+  // consumed part of it already. So: accepted calls ≤ limit, and once the
+  // first 429 lands, every later call is a 429 too (the bucket never refills
+  // inside the hour window).
+  let accepted = 0;
   let budget429 = 0;
   for (let i = 0; i < limit + 3; i++) {
     // Distinct IPs: the per-IP burst limit must not be what trips first —
@@ -96,16 +105,17 @@ test("BYOK tools (auth.secrets) hit the per-tool hourly budget with 429, across 
       body,
       headers: { "x-forwarded-for": `203.0.113.${i % 250}` },
     });
-    if (i < limit) {
-      expect(res.status).toBe(503); // accepted by the gates, binding unconfigured
+    if (res.status === 503 && budget429 === 0) {
+      accepted++; // passed the gates, binding unconfigured
     } else {
-      expect(res.status).toBe(429);
+      expect(res.status).toBe(429); // and only ever 429 after the first one
       expect(res.headers.get("retry-after")).toBeTruthy();
       expect(((await res.json()) as { error: string }).error).toContain("budget");
       budget429++;
     }
   }
-  expect(budget429).toBe(3);
+  expect(accepted).toBeLessThanOrEqual(limit);
+  expect(budget429).toBeGreaterThanOrEqual(3);
 
   // Keyless tools are untouched by the exhausted BYOK budget.
   const keyless = await post("calculator", {
