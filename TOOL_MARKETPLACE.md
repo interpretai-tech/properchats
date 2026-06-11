@@ -1143,3 +1143,27 @@ actual setup, the answer is no for the request path, with one real exception:
 Decision rule: ship tracing on-by-config, async-batched, content-capture OFF by
 default (opt in per-env), and treat "endpoint set but unreachable" as a misconfig
 to alarm on, not the steady state.
+
+### 2026-06-11 — Design: a "maximal agent" must grant the UNION of every tool, and native server-tools need wrapping to join the loop
+A single max-capability agent ("one ring") is only as capable as its grant
+list — and it's easy to ship a curated subset by accident. Two traps surfaced:
+- **Registered-but-not-granted.** A toolset can be fully registered in the
+  agent's registry yet absent from the agent's grant list (a hardcoded array on
+  the client). Result: a tool you built never reaches the loop. Audit the grant
+  against the registry, not against memory; the maximal agent's grant should be
+  the registry's full applicable set, computed/asserted — not a static subset
+  that silently drifts.
+- **Provider-native server-tools live on a DIFFERENT plane than in-loop Python
+  tools.** web_search / code_execution / url_context are executed by the model
+  provider during a single completion ("server tools"), whereas an agent loop
+  drives Python tools turn-by-turn. So a maximal agent that only unions its
+  Python toolsets is missing the native ones entirely. To put a server-tool on
+  the loop, wrap it as a per-call Tool whose body makes a provider completion
+  with just that server-tool enabled and returns the result — then it composes
+  like any other tool. Critically, gate each on a per-(provider,model) support
+  predicate and have the builder self-report not-applicable (return None) when
+  unsupported, so the agent degrades gracefully across providers instead of
+  hard-failing validation. Net rule: "all tools on one loop" = union(in-loop
+  toolsets) + wrapped(native server-tools, per-provider-gated), minus anything
+  staged/unsupported — and verify by asserting the assembled harness's token set
+  equals that expected union, since a green build never checks grant coverage.
