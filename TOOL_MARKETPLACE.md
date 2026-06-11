@@ -1015,3 +1015,29 @@ pin a region (and file a quota-increase) when latency or data-residency demands
 it. Fastest possible test loop — no pod, no IaC: mint a token in-process
 (`google.auth.default(scopes=[cloud-platform]).refresh()`) and `curl`/urllib the
 rawPredict URL; 200 vs 404/400 instantly tells you availability + id format.
+
+### 2026-06-11 — Gotcha: downloadable service-account keys are often org-disabled — design for keyless (WIF) from the start
+Plan A for "let our pods call a cloud API" is usually "create a service account,
+download a JSON key, mount it as a secret." On security-hardened GCP orgs that
+**fails**: `gcloud iam service-accounts keys create` returns
+`FAILED_PRECONDITION: Key creation is not allowed on this service account` —
+the org enforces `constraints/iam.disableServiceAccountKeyCreation`. The policy
+is deliberate (downloadable keys are long-lived, exfiltratable, and land in
+state/secret stores), and it's exactly what nudges you to the better pattern.
+Two ways through:
+- **Quick stopgap (admin):** flip the project policy off, mint the one key,
+  flip it back on — `gcloud resource-manager org-policies disable-enforce
+  iam.disableServiceAccountKeyCreation --project=<p>` … create key …
+  `enable-enforce`. Re-enabling does NOT revoke an already-created key (it only
+  blocks NEW keys), so the key keeps working. Needs `roles/orgpolicy.policyAdmin`;
+  if the constraint is set at the ORG level it must be toggled with
+  `--organization=<id>`, not `--project`.
+- **Right answer (keyless):** Workload Identity Federation. From AWS/EKS, map the
+  pod's existing IAM identity (IRSA) to a GCP WIF pool and impersonate the SA —
+  google-auth uses a NON-secret "external account" cred-config file (no key in
+  it) to exchange the AWS credential for a short-lived GCP token. Nothing to
+  download, nothing to rotate, nothing the key-creation policy blocks.
+Design implication: when wiring a cross-cloud integration, assume you may not be
+allowed to download a key and budget for WIF/keyless up front — the SDK code is
+identical either way (the client reads ADC); only the credential SOURCE differs,
+so this is a deploy/IAM decision, not an app-code one.
