@@ -974,3 +974,29 @@ job-poll pages use, so ownership is enforced by upstream org-scoping and the
 page poller only stops on a genuine terminal status. Net: the run is checkable
 from any later session by link, decoupled from whether the launching thread's
 own poll ever completed.
+
+### 2026-06-11 — Finding: routing Claude through Vertex for cloud credits is ADC-only — an API key (incl. a Gemini key) cannot authenticate Claude-on-Vertex
+A tempting cost lever for a multi-model app is "serve our Anthropic models on
+Google/Vertex credits by default." But the Anthropic SDK's `AnthropicVertex`
+client (read at `anthropic==0.71.0`, `anthropic/lib/vertex/_client.py`) takes
+only `project_id`, `region`, `access_token`, `credentials` — there is **no
+`api_key` parameter**. Auth resolves through `google.auth.default()` → Google
+**ADC** (service account / `GOOGLE_APPLICATION_CREDENTIALS` / workload
+identity), and it requires the `anthropic[vertex]` extra (`google-auth`). So:
+- A `GEMINI_API_KEY` (or any "express" key) buys you Google's *Gemini* models
+  only; it can never pay for *Claude* on Vertex. "Default to a Gemini API key"
+  and "route Claude via Google credits" are two different integrations, not
+  one — don't conflate them in a fallback ladder.
+- Vertex serves Claude under `@`-VERSIONED publisher ids
+  (`claude-opus-4-1@20250805`), routed per project+region. A bare model alias
+  404s — the id transform must map every served tier to its exact Vertex
+  version, and `region` is REQUIRED (not every region carries every model).
+- If the service runs on AWS/elsewhere, "use GCP credits for Claude" means
+  mounting a GCP service-account credential into non-GCP pods — real infra, not
+  a config flag. Cost/shape implication: budget for ADC provisioning, not just
+  a project id env var.
+Decision rule: pick the lever by what you actually want — cheaper spend by
+ANSWERING with Gemini models (gate a Gemini-model fallback on "no usable
+Anthropic key", an API-key-only change), vs. keeping Claude quality on Google's
+dime (Vertex + ADC + per-tier @-version ids + region, an infra change). They
+are not substitutable.
