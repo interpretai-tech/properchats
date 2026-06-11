@@ -19,11 +19,10 @@
  *   back to the model as `{ error }` with OUR copy (`ToolError` messages),
  *   never raw vendor prose.
  */
-import { ToolError, type ToolManifest } from "./manifest";
+import { TOOL_NAME_SEP, ToolError, type ToolManifest } from "./manifest";
 import { getToolManifest, invokeTool, TOOL_MANIFESTS } from "./registry";
 
-/** Separator between tool id and function name in a model-facing tool name. */
-export const TOOL_NAME_SEP = "__";
+export { TOOL_NAME_SEP } from "./manifest";
 
 /** A provider-agnostic tool definition the chat loop hands to an adapter. */
 export interface ProviderToolDef {
@@ -113,10 +112,38 @@ export async function runToolDef(
   }
 }
 
-/** Human trace line for the activity log, e.g. `Used Web scrape (scrape_url)`. */
-export function toolDefTraceText(name: string): string {
+/**
+ * Resolve a model-emitted tool name to TRUSTED display strings — the label and
+ * the fn name come from the registered manifest, never echoed from the model.
+ * Null when the name doesn't resolve to a registered tool + declared function.
+ */
+function resolveToolDefDisplay(name: string): { label: string; fn: string } | null {
   const parsed = parseToolDefName(name);
-  if (!parsed) return `Used ${name}`;
-  const label = getToolManifest(parsed.toolId)?.display.label ?? parsed.toolId;
-  return `Used ${label} (${parsed.fn})`;
+  if (!parsed) return null;
+  const manifest = getToolManifest(parsed.toolId);
+  if (!manifest || manifest.binding.kind !== "webhook") return null;
+  const fn = manifest.binding.functions.find((f) => f.name === parsed.fn);
+  if (!fn) return null;
+  return { label: manifest.display.label, fn: fn.name };
+}
+
+/**
+ * Status line shown while a tool call runs. The model-emitted name is never
+ * shown verbatim (hostile model output must not reach the UI): it is resolved
+ * against the registered defs first, and an unknown name degrades to a
+ * generic line.
+ */
+export function toolDefStatusText(name: string): string {
+  const display = resolveToolDefDisplay(name);
+  return display ? `Running ${display.label} (${display.fn})…` : "Running tool…";
+}
+
+/**
+ * Human trace line for the activity log, e.g. `Used Web scrape (scrape_url)`.
+ * Same rule as the status line: only registry-owned strings, never the raw
+ * model-emitted name.
+ */
+export function toolDefTraceText(name: string): string {
+  const display = resolveToolDefDisplay(name);
+  return display ? `Used ${display.label} (${display.fn})` : "Used a community tool";
 }

@@ -1,6 +1,7 @@
 import {
   manifestToToolDefs,
   runToolDef,
+  toolDefStatusText,
   toolDefTraceText,
   type ProviderToolDef,
 } from "../tools/defs";
@@ -275,6 +276,61 @@ async function* interpretStream(input: DispatchInput): AsyncGenerator<StreamEven
 // --------------------------------------------------------------------------
 
 const COMMUNITY_TOOL_ROUNDS = 6;
+/** Hard cap on dispatched tool calls across ALL rounds of one turn. */
+export const MAX_TOOL_CALLS_PER_TURN = 12;
+/** Hard cap on dispatched tool calls within ONE round (parallel calls). */
+export const MAX_PARALLEL_TOOL_CALLS = 4;
+
+export const TOOL_BUDGET_EXHAUSTED_ERROR = "tool budget for this turn exhausted";
+export const TOOL_PARALLEL_CAP_ERROR = `too many parallel tool calls in one round (max ${MAX_PARALLEL_TOOL_CALLS})`;
+export const TOOL_BAD_ARGS_ERROR = "tool call arguments were not valid JSON";
+
+/**
+ * Per-turn invocation budget (one instance per adapter turn). The metering
+ * counter in registry.ts only *observes*; this is what actually throttles a
+ * runaway or hostile model. Mirrors union degradation: an over-budget call
+ * gets a structured `{ error }` result and the loop keeps going so the model
+ * can synthesize — the stream is never killed.
+ */
+function createToolBudget() {
+  let used = 0;
+  return {
+    /** Try to spend one call slot; `indexInRound` is 0-based within the round. */
+    take(indexInRound: number): { ok: true } | { ok: false; error: string } {
+      if (indexInRound >= MAX_PARALLEL_TOOL_CALLS) {
+        return { ok: false, error: TOOL_PARALLEL_CAP_ERROR };
+      }
+      if (used >= MAX_TOOL_CALLS_PER_TURN) {
+        return { ok: false, error: TOOL_BUDGET_EXHAUSTED_ERROR };
+      }
+      used++;
+      return { ok: true };
+    },
+  };
+}
+type ToolBudget = ReturnType<typeof createToolBudget>;
+
+/**
+ * Run one budgeted community tool call. Yields the status/trace events (with
+ * the model-emitted name resolved against the registry — never echoed
+ * verbatim) and returns the result data to feed back to the model. `args` is
+ * null when the model emitted malformed JSON: that becomes a structured
+ * `{ error }` without dispatching and without spending budget.
+ */
+async function* runBudgetedToolCall(
+  budget: ToolBudget,
+  indexInRound: number,
+  name: string,
+  args: Record<string, unknown> | null,
+): AsyncGenerator<StreamEvent, unknown> {
+  if (args === null) return { error: TOOL_BAD_ARGS_ERROR };
+  const gate = budget.take(indexInRound);
+  if (!gate.ok) return { error: gate.error };
+  yield { type: "status", text: toolDefStatusText(name) };
+  const result = await runToolDef(name, args);
+  yield { type: "trace", text: toolDefTraceText(name) };
+  return result;
+}
 
 function communityToolDefs(cap: Capability): ProviderToolDef[] {
   return cap === "chat" ? manifestToToolDefs() : [];
@@ -356,21 +412,33 @@ async function* anthropicStream(input: DispatchInput): AsyncGenerator<StreamEven
   let outTokens: number | undefined;
   let inTokens: number | undefined;
 
+  const budget = createToolBudget();
   for (let round = 0; round <= COMMUNITY_TOOL_ROUNDS; round++) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: input.model,
-        ...(input.system ? { system: input.system } : {}),
-        messages: msgs,
-        max_tokens: input.maxTokens,
-        ...(allTools.length ? { tools: allTools } : {}),
-        // `temperature` is deprecated on the Claude 4.x line (returns 400), so we
-        // omit it for Anthropic and let the model use its default.
-        stream: true,
-      }),
-    });
+    // F3: the final round exists only to synthesize — a tool_use there could
+    // never dispatch, so community tools are not offered on it. Server tools
+    // (web_search/code on capability turns) keep their provider-side semantics.
+    const roundTools = round < COMMUNITY_TOOL_ROUNDS ? allTools : tools ?? [];
+    let res: Response;
+    try {
+      res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: input.model,
+          ...(input.system ? { system: input.system } : {}),
+          messages: msgs,
+          max_tokens: input.maxTokens,
+          ...(roundTools.length ? { tools: roundTools } : {}),
+          // `temperature` is deprecated on the Claude 4.x line (returns 400), so we
+          // omit it for Anthropic and let the model use its default.
+          stream: true,
+        }),
+      });
+    } catch {
+      // Normalized copy only — raw fetch rejection prose never reaches the stream.
+      yield { type: "error", error: "Anthropic: could not reach the provider (network error)" };
+      return;
+    }
     if (!res.ok) {
       yield { type: "error", error: `Anthropic: ${await errorText(res)}` };
       return;
@@ -454,24 +522,28 @@ async function* anthropicStream(input: DispatchInput): AsyncGenerator<StreamEven
 
     // Tool round: replay the assistant turn, dispatch each call through the
     // registry seam (same one /api/tools uses), feed results back, continue.
-    const toolUseBlocks = clientCalls.map((c) => {
-      let parsedInput: Record<string, unknown> = {};
+    // Malformed JSON args → `args: null` → structured { error }, never a throw.
+    const parsedCalls = clientCalls.map((c) => {
+      let args: Record<string, unknown> | null = null;
       try {
-        parsedInput = c.json ? (JSON.parse(c.json) as Record<string, unknown>) : {};
+        args = c.json ? (JSON.parse(c.json) as Record<string, unknown>) : {};
       } catch {
-        /* model emitted malformed json; dispatch with empty args */
+        /* model emitted malformed json */
       }
-      return { type: "tool_use", id: c.id, name: c.name, input: parsedInput };
+      return { id: c.id, name: c.name, args };
     });
     msgs.push({
       role: "assistant",
-      content: [...(textAcc ? [{ type: "text", text: textAcc }] : []), ...toolUseBlocks],
+      content: [
+        ...(textAcc ? [{ type: "text", text: textAcc }] : []),
+        // The replayed tool_use block needs a JSON object even when args were malformed.
+        ...parsedCalls.map((c) => ({ type: "tool_use", id: c.id, name: c.name, input: c.args ?? {} })),
+      ],
     });
     const resultBlocks: Record<string, unknown>[] = [];
-    for (const call of toolUseBlocks) {
-      yield { type: "status", text: `Running ${call.name}…` };
-      const result = await runToolDef(call.name, call.input);
-      yield { type: "trace", text: toolDefTraceText(call.name) };
+    for (let i = 0; i < parsedCalls.length; i++) {
+      const call = parsedCalls[i];
+      const result = yield* runBudgetedToolCall(budget, i, call.name, call.args);
       resultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
     }
     msgs.push({ role: "user", content: resultBlocks });
@@ -518,13 +590,15 @@ async function* openaiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
   let stopReason: string | null = null;
   let usage: { input?: number; output?: number } | undefined;
 
+  const budget = createToolBudget();
   for (let round = 0; round <= COMMUNITY_TOOL_ROUNDS; round++) {
     const body: Record<string, unknown> = {
       model: input.model,
       messages,
       stream: true,
       stream_options: { include_usage: true },
-      ...(communityTools.length ? { tools: communityTools } : {}),
+      // F3: the final round can never dispatch, so it gets no tools at all.
+      ...(round < COMMUNITY_TOOL_ROUNDS && communityTools.length ? { tools: communityTools } : {}),
     };
     if (isReasoning) {
       body.max_completion_tokens = input.maxTokens;
@@ -533,11 +607,18 @@ async function* openaiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
       if (input.temperature != null) body.temperature = input.temperature;
     }
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      // Normalized copy only — raw fetch rejection prose never reaches the stream.
+      yield { type: "error", error: "OpenAI: could not reach the provider (network error)" };
+      return;
+    }
     if (!res.ok) {
       yield { type: "error", error: `OpenAI: ${await errorText(res)}` };
       return;
@@ -592,16 +673,16 @@ async function* openaiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
         function: { name: c.name, arguments: c.args || "{}" },
       })),
     });
-    for (const c of toolCalls) {
-      let args: Record<string, unknown> = {};
+    for (let i = 0; i < toolCalls.length; i++) {
+      const c = toolCalls[i];
+      // Malformed JSON args → null → structured { error }, never a throw.
+      let args: Record<string, unknown> | null = null;
       try {
         args = c.args ? (JSON.parse(c.args) as Record<string, unknown>) : {};
       } catch {
-        /* malformed args from the model; dispatch with empty args */
+        /* model emitted malformed json */
       }
-      yield { type: "status", text: `Running ${c.name}…` };
-      const result = await runToolDef(c.name, args);
-      yield { type: "trace", text: toolDefTraceText(c.name) };
+      const result = yield* runBudgetedToolCall(budget, i, c.name, args);
       messages.push({
         role: "tool",
         tool_call_id: c.id,
@@ -844,18 +925,18 @@ async function* geminiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
   }
 
   yield { type: "start", provider: "gemini", route: "direct", model: input.model };
-  const tools = geminiTools(cap) ?? [];
+  const serverTools = geminiTools(cap) ?? [];
   // Community (marketplace) client tools, as Gemini function declarations.
   const communityDefs = communityToolDefs(cap);
-  if (communityDefs.length) {
-    tools.push({
-      function_declarations: communityDefs.map((d) => ({
-        name: d.name,
-        description: d.description,
-        parameters: d.parameters,
-      })),
-    });
-  }
+  const communityDecl = communityDefs.length
+    ? {
+        function_declarations: communityDefs.map((d) => ({
+          name: d.name,
+          description: d.description,
+          parameters: d.parameters,
+        })),
+      }
+    : null;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     input.model,
   )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`;
@@ -867,20 +948,34 @@ async function* geminiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
   const seenSources = new Set<string>();
   const seenQueries = new Set<string>();
 
+  const budget = createToolBudget();
   for (let round = 0; round <= COMMUNITY_TOOL_ROUNDS; round++) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents,
-        ...(input.system ? { systemInstruction: { parts: [{ text: input.system }] } } : {}),
-        ...(tools.length ? { tools } : {}),
-        generationConfig: {
-          maxOutputTokens: input.maxTokens,
-          ...(input.temperature != null ? { temperature: input.temperature } : {}),
-        },
-      }),
-    });
+    // F3: the final round can never dispatch — community declarations are not
+    // offered on it. Server tools (search/code) keep provider-side semantics.
+    const roundTools =
+      round < COMMUNITY_TOOL_ROUNDS && communityDecl
+        ? [...serverTools, communityDecl]
+        : serverTools;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents,
+          ...(input.system ? { systemInstruction: { parts: [{ text: input.system }] } } : {}),
+          ...(roundTools.length ? { tools: roundTools } : {}),
+          generationConfig: {
+            maxOutputTokens: input.maxTokens,
+            ...(input.temperature != null ? { temperature: input.temperature } : {}),
+          },
+        }),
+      });
+    } catch {
+      // Normalized copy only — raw fetch rejection prose never reaches the stream.
+      yield { type: "error", error: "Gemini: could not reach the provider (network error)" };
+      return;
+    }
     if (!res.ok) {
       yield { type: "error", error: `Gemini: ${await errorText(res)}` };
       return;
@@ -957,10 +1052,10 @@ async function* geminiStream(input: DispatchInput): AsyncGenerator<StreamEvent> 
       ],
     });
     const responseParts: Record<string, unknown>[] = [];
-    for (const c of funcCalls) {
-      yield { type: "status", text: `Running ${c.name}…` };
-      const result = await runToolDef(c.name, c.args);
-      yield { type: "trace", text: toolDefTraceText(c.name) };
+    for (let i = 0; i < funcCalls.length; i++) {
+      const c = funcCalls[i];
+      // Gemini delivers args pre-parsed, so malformed-JSON can't occur here.
+      const result = yield* runBudgetedToolCall(budget, i, c.name, c.args);
       responseParts.push({
         function_response: { name: c.name, response: asResponseObject(result) },
       });

@@ -5,8 +5,20 @@ import {
   parseToolDefName,
   runToolDef,
   TOOL_NAME_SEP,
+  toolDefStatusText,
+  toolDefTraceText,
 } from "../src/lib/tools/defs";
-import { getToolCallCounts, getToolManifest } from "../src/lib/tools/registry";
+import {
+  UNTRUSTED_BEGIN,
+  UNTRUSTED_END,
+  UNTRUSTED_NOTE,
+} from "../src/lib/tools/bindings/firecrawl";
+import {
+  assertToolIdsValid,
+  getToolCallCounts,
+  getToolManifest,
+  TOOL_MANIFESTS,
+} from "../src/lib/tools/registry";
 
 /**
  * M2 shape tests (TOOL_MARKETPLACE.md "masked failures unmask on vendor
@@ -198,6 +210,97 @@ test("vendor failure comes back as OUR copy, never raw vendor prose", async () =
 test("unknown tool name returns normalized error data, never throws", async () => {
   const result = (await runToolDef("nope__fn", {})) as { error?: string };
   expect(result.error).toBe("Unknown tool: nope__fn");
+});
+
+// ── F9: SSRF host guard — internal targets refused before any fetch ─────────
+
+const SSRF_URLS = [
+  "http://127.0.0.1/admin",
+  "http://127.1.2.3:8080/x",
+  "http://localhost:3000/secrets",
+  "http://sub.localhost/x",
+  "http://[::1]/x",
+  "http://[::ffff:127.0.0.1]/x",
+  "http://0.0.0.0/x",
+  "http://169.254.169.254/latest/meta-data/",
+  "http://metadata.google.internal/computeMetadata/v1/",
+  "http://10.0.0.5/internal",
+  "http://172.16.4.2/internal",
+  "http://192.168.1.1/router",
+  "http://100.64.0.1/cgnat",
+  // Raw-IP encodings of 127.0.0.1: decimal, hex, octal, short-form.
+  "http://2130706433/",
+  "http://0x7f000001/",
+  "http://0x7f.0.0.1/",
+  "http://017700000001/",
+  "http://127.1/",
+];
+
+for (const bad of SSRF_URLS) {
+  test(`SSRF guard refuses ${bad} with normalized copy, no upstream call`, async () => {
+    process.env.FIRECRAWL_API_KEY = FAKE_KEY;
+    const seen = stubFetch(RECORDED_SCRAPE);
+    const result = (await runToolDef("web_scrape__scrape_url", { url: bad })) as {
+      error?: string;
+    };
+    expect(result.error).toBe(
+      "This URL points at a private, loopback, or internal network address and was refused.",
+    );
+    expect(seen).toHaveLength(0); // refused at the seam, Firecrawl never contacted
+  });
+}
+
+test("SSRF guard still allows public hosts", async () => {
+  process.env.FIRECRAWL_API_KEY = FAKE_KEY;
+  const seen = stubFetch(RECORDED_SCRAPE);
+  const result = (await runToolDef("web_scrape__scrape_url", {
+    url: "https://example.com/page",
+  })) as { error?: string; markdown?: string };
+  expect(result.error).toBeUndefined();
+  expect(seen).toHaveLength(1);
+});
+
+// ── F2: untrusted-content envelope on scrape/search payloads ────────────────
+
+test("scraped markdown is wrapped in the untrusted-content envelope", async () => {
+  process.env.FIRECRAWL_API_KEY = FAKE_KEY;
+  stubFetch(RECORDED_SCRAPE);
+  const result = (await runToolDef("web_scrape__scrape_url", {
+    url: "https://example.com",
+  })) as { markdown: string; notice: string };
+  expect(result.markdown.startsWith(UNTRUSTED_BEGIN)).toBe(true);
+  expect(result.markdown.endsWith(UNTRUSTED_END)).toBe(true);
+  expect(result.markdown).toContain("# Example Domain");
+  expect(result.notice).toBe(UNTRUSTED_NOTE);
+});
+
+test("search results carry the untrusted-content notice", async () => {
+  process.env.FIRECRAWL_API_KEY = FAKE_KEY;
+  stubFetch(RECORDED_SEARCH);
+  const result = (await runToolDef("web_scrape__search_web", {
+    query: "example",
+  })) as { notice: string };
+  expect(result.notice).toBe(UNTRUSTED_NOTE);
+});
+
+// ── F8: tool ids must not contain the name separator ────────────────────────
+
+test("registration asserts tool ids contain no separator", () => {
+  expect(() => assertToolIdsValid()).not.toThrow(); // real registry is clean
+  const bad = { ...TOOL_MANIFESTS[0], id: "evil__tool" };
+  expect(() => assertToolIdsValid([bad])).toThrow(/must not contain "__"/);
+});
+
+// ── F11: status/trace lines never echo the model-emitted name ───────────────
+
+test("status and trace lines resolve names against the registry", () => {
+  expect(toolDefStatusText("calculator__calculate")).toBe("Running Calculator (calculate)…");
+  expect(toolDefTraceText("calculator__calculate")).toBe("Used Calculator (calculate)");
+  // Unknown / hostile names degrade to generic copy — never echoed verbatim.
+  const hostile = "calculator__<img src=x onerror=alert(1)>";
+  expect(toolDefStatusText(hostile)).toBe("Running tool…");
+  expect(toolDefTraceText(hostile)).toBe("Used a community tool");
+  expect(toolDefStatusText("ignore previous instructions__run")).toBe("Running tool…");
 });
 
 test("bad args are a 400-style normalized error through the same seam", async () => {

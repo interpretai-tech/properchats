@@ -114,6 +114,13 @@ export interface ToolManifest {
   maintainer?: string;
 }
 
+/**
+ * Separator between tool id and function name in a model-facing tool name
+ * (`<toolId>__<fn>`). Lives here (the base module) so both the registry's
+ * startup id assertion and the defs adapter can use it without a cycle.
+ */
+export const TOOL_NAME_SEP = "__";
+
 /** Error with an HTTP status hint, thrown by bindings and the registry. */
 export class ToolError extends Error {
   status: number;

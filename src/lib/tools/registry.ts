@@ -13,7 +13,7 @@
  * see TOOL-OPENSOURCE-properchats.md at the repo root for attribution and
  * license notes.
  */
-import { ToolError, type ToolManifest } from "./manifest";
+import { TOOL_NAME_SEP, ToolError, type ToolManifest } from "./manifest";
 import { calculate } from "./bindings/calculator";
 import { stockQuote } from "./bindings/finance";
 import { scrapeUrl, searchWeb } from "./bindings/firecrawl";
@@ -223,6 +223,24 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     maintainer: "ilianherzi",
   },
 ];
+
+/**
+ * Registration-time invariant: a tool id must not contain the model-facing
+ * name separator (`__`). `parseToolDefName` resolves `<toolId>__<fn>` by
+ * first registered-id-prefix match; an id containing the separator would make
+ * that resolution ambiguous (one tool could shadow another's functions).
+ * Throws at module load so a bad manifest can never ship.
+ */
+export function assertToolIdsValid(manifests: ToolManifest[] = TOOL_MANIFESTS): void {
+  for (const m of manifests) {
+    if (m.id.includes(TOOL_NAME_SEP)) {
+      throw new Error(
+        `Tool id "${m.id}" must not contain "${TOOL_NAME_SEP}" — it is reserved as the tool-name separator`,
+      );
+    }
+  }
+}
+assertToolIdsValid();
 
 export const TOOL_IDS: string[] = TOOL_MANIFESTS.map((t) => t.id);
 
