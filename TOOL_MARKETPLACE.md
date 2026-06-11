@@ -479,3 +479,22 @@ a hard gate) are necessary but the go/no-go is an owner decision.
 Operational note: live trending sweeps are currently blocked in the build
 environment (Vertex org policy denies web_search); refresh the candidate
 list when search access returns or do it manually from PH/HN.
+
+### 2026-06-11 — Trending refresh (HN /best, partial — search still env-blocked)
+
+Direct page fetch works even though web_search is policy-blocked, so a
+partial sweep resumed. Signals relevant to the catalog:
+- **PgDog** (pgdog.dev): funded Postgres tooling — watch for an API
+  surface; a managed-Postgres-introspection binding (schema/EXPLAIN as
+  agent tools) keeps coming up as a candidate category.
+- **DiffusionGemma** (Google): ~4x faster text gen — if it lands on a
+  served API, it's a latency-tier candidate for the model catalog, not a
+  tool binding.
+- **npm v12 breaking changes** (github.blog): pin the contribution
+  recipe's CI to the npm major before it flips; bindings recipe assumes
+  lockfile semantics that may shift.
+- Platform churn worth tracking for the private side: AWS Bedrock policy
+  change around Anthropic-bound data sharing (affects where deployers can
+  run BYOK Claude traffic).
+Full PH/leaderboard sweep still pending search access; candidates above
+are watch-list, not shortlist.
