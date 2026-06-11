@@ -15,6 +15,7 @@
  */
 import { TOOL_NAME_SEP, ToolError, type ToolManifest } from "./manifest";
 import { calculate } from "./bindings/calculator";
+import { listVoices, textToSpeech } from "./bindings/elevenlabs";
 import { stockQuote } from "./bindings/finance";
 import { scrapeUrl, searchWeb } from "./bindings/firecrawl";
 import { getWeather } from "./bindings/weather";
@@ -222,6 +223,62 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     pricing: "byok",
     maintainer: "ilianherzi",
   },
+
+  {
+    id: "tts",
+    display: {
+      label: "Text to speech",
+      hint: "Turn text into lifelike spoken audio (ElevenLabs, BYOK — vendor bills per character; free tier 10k chars/mo)",
+      icon: "Volume2",
+    },
+    description:
+      "text_to_speech converts text (max 2,500 characters per call) into a " +
+      "spoken audio clip via ElevenLabs and returns clip METADATA only " +
+      "(voiceId, characters, contentType, bytes) — the audio file itself is " +
+      "delivered to the user's interface, never into this conversation, so " +
+      "never ask for or try to repeat the audio data. Use it when the user " +
+      "asks to hear text read aloud, narrated, or turned into voice audio. " +
+      "list_voices returns the available voice ids with names and labels; " +
+      "call it first when the user wants a specific kind of voice.",
+    binding: {
+      kind: "webhook",
+      endpoint: "/api/tools/tts",
+      functions: [
+        {
+          name: "text_to_speech",
+          description:
+            "Synthesize one audio clip (audio/mpeg) from text; returns clip metadata, not audio data.",
+          parameters: {
+            type: "object",
+            properties: {
+              text: {
+                type: "string",
+                description: "The text to speak, up to 2,500 characters.",
+              },
+              voiceId: {
+                type: "string",
+                description:
+                  'ElevenLabs voice id from list_voices (default "21m00Tcm4TlvDq8ikWAM" — "Rachel", a premade voice).',
+              },
+            },
+            required: ["text"],
+          },
+        },
+        {
+          name: "list_voices",
+          description:
+            "List available ElevenLabs voices as compact {id, name, labels} rows (capped at 25).",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+    },
+    providers: ["anthropic", "openai", "gemini"],
+    auth: { requiresSignIn: false, secrets: ["ELEVENLABS_API_KEY"] },
+    policy: { allowance: UNMETERED, meterMode: "per-turn" },
+    category: "media",
+    pricing: "byok",
+    maintainer: "ilianherzi",
+  },
 ];
 
 /**
@@ -261,6 +318,7 @@ const HANDLERS: Record<string, Record<string, ToolHandler>> = {
   calculator: { calculate },
   stock_quote: { stock_quote: stockQuote },
   web_scrape: { scrape_url: scrapeUrl, search_web: searchWeb },
+  tts: { text_to_speech: textToSpeech, list_voices: listVoices },
 };
 
 /**

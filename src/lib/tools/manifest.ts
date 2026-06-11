@@ -121,6 +121,24 @@ export interface ToolManifest {
  */
 export const TOOL_NAME_SEP = "__";
 
+/**
+ * Reserved result key for UI-only payloads (binary/large data the model must
+ * never see). A binding that produces non-text output (audio, images, files)
+ * puts the heavy payload — e.g. `{ dataUrl, contentType, bytes }` — under this
+ * key and keeps every other field compact metadata. The split:
+ *
+ * - **Model loop** (`runToolDef`): the key is STRIPPED before the result is
+ *   stringified into the tool_result block — the model sees metadata plus a
+ *   placeholder field, never base64 bytes.
+ * - **Bridge route** (`POST /api/tools/<id>`): the result passes through
+ *   intact, so UI callers receive the payload.
+ *
+ * Precedent set by the ElevenLabs TTS binding (the catalog's first non-text
+ * tool); lives here (the base module) so bindings and the defs adapter share
+ * it without a cycle.
+ */
+export const UI_PAYLOAD_KEY = "_ui";
+
 /** Error with an HTTP status hint, thrown by bindings and the registry. */
 export class ToolError extends Error {
   status: number;

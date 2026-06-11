@@ -19,7 +19,7 @@
  *   back to the model as `{ error }` with OUR copy (`ToolError` messages),
  *   never raw vendor prose.
  */
-import { TOOL_NAME_SEP, ToolError, type ToolManifest } from "./manifest";
+import { TOOL_NAME_SEP, ToolError, UI_PAYLOAD_KEY, type ToolManifest } from "./manifest";
 import { getToolManifest, invokeTool, TOOL_MANIFESTS } from "./registry";
 
 export { TOOL_NAME_SEP } from "./manifest";
@@ -90,6 +90,28 @@ export function parseToolDefName(
 }
 
 /**
+ * Drop the reserved UI-only payload (`UI_PAYLOAD_KEY`) from a tool result
+ * before it reaches the model loop. Bindings with binary output (audio,
+ * images, files) park the heavy bytes there; providers.ts JSON.stringifies
+ * the whole result into the tool_result block, so the strip here is what
+ * keeps megabytes of base64 out of the model's context. The bridge route
+ * does NOT strip — UI callers get the payload.
+ */
+function stripUiPayload(result: unknown): unknown {
+  if (
+    result &&
+    typeof result === "object" &&
+    !Array.isArray(result) &&
+    UI_PAYLOAD_KEY in result
+  ) {
+    const modelVisible = { ...(result as Record<string, unknown>) };
+    delete modelVisible[UI_PAYLOAD_KEY];
+    return modelVisible;
+  }
+  return result;
+}
+
+/**
  * Execute one model tool call through the registry dispatch seam. NEVER
  * throws: the chat loop must keep streaming, so failures are returned to the
  * model as `{ error }` data using our normalized copy.
@@ -102,7 +124,7 @@ export async function runToolDef(
   if (!parsed) return { error: `Unknown tool: ${name}` };
   try {
     const result = await invokeTool(parsed.toolId, parsed.fn, args);
-    return result ?? null;
+    return stripUiPayload(result) ?? null;
   } catch (e) {
     // ToolError messages are written by us (the binding / registry); anything
     // else gets generic copy so raw vendor prose never reaches the model/UI.

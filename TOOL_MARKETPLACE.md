@@ -498,3 +498,85 @@ partial sweep resumed. Signals relevant to the catalog:
   run BYOK Claude traffic).
 Full PH/leaderboard sweep still pending search access; candidates above
 are watch-list, not shortlist.
+
+### 2026-06-11 — ElevenLabs TTS binding shipped (`tts`) — first non-text tool; binary-output precedent set
+
+Second BYOK marketplace binding, built strictly by the CONTRIBUTING_TOOLS.md
+recipe: `src/lib/tools/bindings/elevenlabs.ts`, one registry entry (id `tts`,
+functions `text_to_speech {text, voiceId?}` / `list_voices {}`), one spec file
+(`tests/elevenlabs-tts.spec.ts`), TOOLS.md regenerated (5 tools). BYOK on
+`ELEVENLABS_API_KEY` (vendor bills per character; free tier 10k chars/mo);
+fixed base `ELEVENLABS_BASE_URL || https://api.elevenlabs.io` (no
+user-supplied URLs, SSRF n/a). Pinned protocol: `POST
+/v1/text-to-speech/{voice_id}` + `GET /v1/voices`, both `xi-api-key` —
+shape-tested on recorded responses so a dead key can't mask drift. Default
+voice documented in the schema (`21m00Tcm4TlvDq8ikWAM`, "Rachel", premade).
+
+**Binary-output design decision (the precedent for all future
+audio/image/file tools).** TTS returns audio bytes; the chat loop
+`JSON.stringify`s the ENTIRE tool result into the model's tool_result block
+(`providers.ts`), and the bridge route returns the same `invokeTool` result —
+the platform had exactly one result channel. 2,500 chars of speech is ~2-3 MB
+of mp3 (~3-4 MB as base64): inlining it would blow the context on every call.
+Decision, two parts:
+
+1. **Size cap at the seam**: `text` > 2,500 chars is refused up front with
+   instructive copy (split into multiple calls) — also keeps one call inside
+   a sane slice of the vendor free tier.
+2. **Split-channel result via a reserved key**: the manifest contract gains
+   `UI_PAYLOAD_KEY = "_ui"` (`src/lib/tools/manifest.ts`). A binding parks
+   heavy payloads there (`{ dataUrl, contentType, bytes }`) and keeps every
+   other field compact metadata. `runToolDef` strips the key before the
+   result reaches the model — the model-visible result is
+   `{ voiceId, characters, contentType, bytes, audio: "<omitted: N bytes
+   audio/mpeg>" }`, asserted in tests to contain zero base64 and to serialize
+   under 500 bytes. The `/api/tools/<id>` bridge route is untouched and
+   passes `_ui` through, so UI callers get the playable `data:audio/mpeg`
+   URL. Rationale for a reserved key over alternatives: a binding cannot
+   tell which caller invoked it (model loop and bridge share the one
+   `invokeTool` seam — by design), a model-settable `include_audio` arg
+   would let the model pull bytes into its own context, and server-side
+   audio storage is out of scope for a marketplace binding. The strip is ~10
+   generic lines in `defs.ts`; image/file tools should reuse `_ui` verbatim.
+   (Follow-up when a chat-UI audio card lands: `runBudgetedToolCall` could
+   additionally surface `_ui` as a stream event, the way provider `image`
+   events flow today.)
+
+**Recipe friction findings (CONTRIBUTING_TOOLS.md followed as a third-party
+contributor):**
+
+1. **Binary output had NO recipe — and needed a platform change.** The
+   "agent-sized output" rule assumes text ("trim to ~20 fields"). A pure
+   outside contributor could not have shipped this tool: keeping bytes out of
+   the model loop required the `UI_PAYLOAD_KEY` seam in `manifest.ts` +
+   `defs.ts`, which the recipe says contributors never touch. Now that the
+   seam exists the promise holds again — CONTRIBUTING_TOOLS.md should
+   document `_ui` under "Agent-sized output".
+2. **Binding filename convention is ambiguous.** Recipe says
+   `bindings/<id>.ts`, but the only BYOK example is `firecrawl.ts` with id
+   `web_scrape` (vendor-named file, product-named id). Followed the firecrawl
+   precedent (`elevenlabs.ts`, id `tts`); recipe should pick one rule.
+3. **Nowhere to declare vendor pricing details.** Manifest `pricing` is just
+   the `keyless|byok|metered` enum; "per character, 10k chars/mo free" had to
+   ride in `display.hint`, which is picker UI copy. A listing-only
+   `pricingNote` field would separate catalog metadata from prompt/UI text.
+4. **Test-layout contradiction.** Recipe step 3 says to ADD cases to the two
+   shared spec files (`tools-registry.spec.ts`, `tool-defs.spec.ts` "as
+   template"), while the marketplace pitch is "one binding + one entry +
+   tests". A standalone per-tool spec file works (runner globs it) and avoids
+   contributor merge conflicts on shared files — recipe should bless that
+   explicitly.
+5. **The recorded-shape pattern only covers the defs path.** Stubbing
+   `globalThis.fetch` works for node-side `runToolDef` tests, but bridge
+   tests hit the dev-server process where nothing can be stubbed — so bridge
+   dispatch coverage for BYOK tools is forever live-or-skip. Worth stating in
+   the recipe so contributors don't try to stub the server.
+6. **Checklist wording on `upstream` reads mandatory** ("attribution filled
+   for wrapped OSS") but proprietary vendors (ElevenLabs) legitimately omit
+   the block; the §0 text is clear, the checklist is not.
+7. **Doc drift**: `registry.ts` header still says "All three launch tools are
+   open-source, keyless" — now 5 tools, 2 of them BYOK.
+
+Verification: full Playwright suite 73 passed / 3 skipped (live-key tests),
+`tsc --noEmit` clean, `eslint .` clean, `next build` clean, `npm run
+gen:tools` regenerated.
