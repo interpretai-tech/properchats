@@ -459,3 +459,23 @@ hostile model output, and hostile scraped content:
   structured `{ error }` without dispatching. All of it pinned by
   `tests/provider-loops.spec.ts` (stubbed provider SSE, one termination case
   per provider) and the expanded `tests/tool-defs.spec.ts`.
+
+### 2026-06-11 — M2 cycle closed; M3 is a trust-model decision, not a feature
+
+M2 shipped and survived its adversarial pass in one day: build (29faa77)
+→ critic (SSRF chain, unenforced budget, untested loop) → hardening
+(a41b87d: seam-level SSRF guard with legacy-IP-encoding parser, enforced
+12/turn + 4/round budget, untrusted-content envelope, 373-line loop spec).
+Status: a contributed manifest is now standalone-callable AND
+agent-callable, stripped when unconfigured, metered per invocation,
+with vendor copy normalized everywhere.
+
+M3 (runtime remote manifests via TOOL_MANIFEST_URLS) is deliberately NOT
+started autonomously: it changes who can put executable tool surface in
+front of the model from "repo committers" to "anyone a deployer pastes a
+URL for". The documented preconditions (schema validation on load, bridge
+rate limits on remote endpoints, allowlist default-OFF hosted, metering as
+a hard gate) are necessary but the go/no-go is an owner decision.
+Operational note: live trending sweeps are currently blocked in the build
+environment (Vertex org policy denies web_search); refresh the candidate
+list when search access returns or do it manually from PH/HN.
