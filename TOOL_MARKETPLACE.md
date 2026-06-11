@@ -318,3 +318,17 @@ a contributed tool gets BOTH for free from the platform seams — the
 registry dispatch metric (cost plane) and a `tool_used {tool}` product
 event — so manifests never embed their own analytics SDKs (a binding that
 phones home fails review).
+
+### 2026-06-11 — Wave verification learning: masked failures unmask on vendor recovery
+
+From today's full-suite gate: a model binding (gp-xlarge → direct
+gpt-5.5-pro on chat-completions) had been broken for an unknown time but
+*invisible* because the vendor key was over quota — every call failed at
+the quota layer before reaching the endpoint mismatch. When the key
+recovered, the real bug surfaced. Marketplace rules derived: (1) a
+binding's CI must include a *shape* test against recorded vendor responses
+(endpoint/protocol mismatch fails fast even when live keys are dead);
+(2) the platform error normalizer owns ALL user-facing copy — raw vendor
+prose leaking to the UI is itself a review-blocking defect, because vendor
+errors change under your feet. Both now enforced privately; recipe docs
+should carry them into CONTRIBUTING_TOOLS.md when M2 lands.
