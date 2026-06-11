@@ -671,3 +671,16 @@ Specs: `tests/tools-bridge-security.spec.ts` (direct handler driving: 415,
 plus new pins in `tool-ui.spec.ts` (newline/CRLF/padding anchors, store
 append bounds) and `elevenlabs-tts.spec.ts` (text/html → pinned
 audio/mpeg).
+
+### 2026-06-11 — Surface declared stable; remaining gates are owner decisions
+
+Second hardening cycle (a836b1f) closed same-day: bridge posture
+(JSON-only + cross-site 403 + per-tool BYOK budget), store append bounds,
+vendor content-type pin, calibrated caps — all test-pinned. The catalog
+surface (5 tools, defs seam, _ui pipeline, bridge) is now stable and
+critic-converged; further autonomous iteration here would be churn, not
+value. Open gates, all owner decisions: M3 remote manifests (trust
+model), structured pricing-details field (wants billing plane), image/
+file _ui kinds (wants a first consumer tool), and the full trending
+sweep (wants search access). Next binding candidates remain fal.ai /
+Shovels / Postiz from the shortlist when prioritized.
