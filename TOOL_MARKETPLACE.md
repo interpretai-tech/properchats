@@ -347,3 +347,13 @@ weight left by the fixes themselves. Marketplace mapping: PR review of a
 contributed binding = the per-feature pass; the nightly catalog-wide
 suite over TOOLS.md entries = the sweep. Neither substitutes for the
 other.
+
+### 2026-06-11 — Build caches lie after deletions
+
+Tiny but recurring lesson from critic round 6: deleting a route/file can
+leave generated build-cache types (`.next/types` validators) referencing
+the dead module, failing typecheck with a phantom error that looks like a
+real break. Rule for the contribution recipe: tool-binding PRs that
+DELETE files must run typecheck from a clean build dir (CI already does;
+locally `rm -rf .next` first). Cheap to document, saves every contributor
+the same five confused minutes.
