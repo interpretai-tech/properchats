@@ -1091,3 +1091,27 @@ picked up main's tracing wrapper for free). Always validate the result against a
 main BASELINE, not just "no \`<<<<<<<\` left": diff the linter error COUNT
 before/after (merge should add zero) and confirm no error lands inside your
 edited line ranges.
+
+### 2026-06-11 — Trap: a new .py reaching `main` without its bazel target passes `bazel build` but crashes at runtime
+A module merged onto main (here: `interpret/tools/usage_metrics.py`, brought in
+by an observability merge) was imported by live code (`chat_runner.py`) but
+**never got a `py_library` target** in its package BUILD, nor a dep edge from the
+importing target. The backend then died at startup with
+`ModuleNotFoundError: No module named 'interpret.tools.usage_metrics'` — even
+though the `.py` was right there in the source tree. Why it slips through:
+**`bazel build` packages a target's declared `srcs`/deps; it does NOT check
+Python imports.** A file with no target is simply absent from the binary's
+**runfiles**, so the failure only appears when the program actually runs and
+imports it. Build-green is not run-green for Python under bazel.
+Fix shape: add the `py_library` (`srcs=["x.py"]`, deps mirroring the module's
+own imports — chase each `from interpret...import` to its target; watch for
+cycles, e.g. ours pulled `//interpret/ai/models:pricing`), then add a dep edge
+from every target whose sources import it. **Verify by RUNFILES, not build
+status:** `bazel build //path:bin` then confirm
+`ls bazel-bin/path/bin.runfiles/_main/<module path>.py` resolves — a green
+build alone proves nothing here.
+Prevention: a CI smoke target that actually imports the server entrypoint under
+its runfiles (`python -c "import interpret.backend.api"`) converts this whole
+class of "merged a file, forgot the BUILD wiring" bug from a prod-startup crash
+into a CI failure. Also scan after big merges: for each `tools/*.py`, flag any
+with no target that is imported anywhere — that's the next time-bomb.
