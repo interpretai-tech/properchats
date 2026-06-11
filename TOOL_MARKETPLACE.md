@@ -914,3 +914,24 @@ properties (would fail if a guard were removed). Two NITs, both argued as
 by-design non-holes (bridge returns raw `_ui` to the same trusted caller; the
 chat UI only renders sanitized `tool_ui` stream events). Regex is linear — no
 ReDoS (4M chars in 24ms, length cap precedes the match).
+
+### 2026-06-11 — Decision: long-running tools need durable async execution, not held-open streams
+A tool that can run for minutes (deep research, a document/PDF agent, the "one
+agent" loop, a multi-city swarm) MUST NOT execute inside a synchronous
+held-open SSE response. We hit this concretely: such runs die with network
+errors when a proxy/idle timeout or a client refresh severs the connection,
+and the work is lost. The durable shape — already proven by customer_search —
+is **launch-job → enqueue (SNS/SQS or any queue) → a worker runs to completion
+writing an incremental trace to a job record → client polls /jobs/{id}**. Two
+properties make it correct: (1) the run's lifetime is decoupled from the HTTP
+connection, so a refresh/disconnect never kills it; (2) the job record carries
+the *incremental* trace (thinking + tool_activity + status, not just the final
+answer) so a poller reconstructs the full progress after a refresh. Lifecycle
+discipline that matters for at-least-once queues: the worker owns
+RUNNING→COMPLETED/FAILED and **re-raises on failure** so visibility-timeout/DLQ
+retry works, and the job must be **idempotent on redelivery** (no double side
+effects). Implication for the marketplace contract: any binding whose worst-
+case latency exceeds a few seconds should declare an async/poll mode rather
+than assume the request-scoped tool-call budget; the in-chat `tool_ui`/poll
+client is the rendering half. (Mirrors the ProperChats one_agent durability
+work: server-persisted run trace + a session-gated poll endpoint.)
