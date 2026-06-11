@@ -274,3 +274,19 @@ the flagship agent. Design rule going forward: **a manifest that needs
 special-casing inside the agent loop is a malformed manifest** — failure
 handling, auth (BYOK), and output sizing must live in the binding, because
 the One Agent will call tools unattended.
+
+### 2026-06-11 — Usage metering is a manifest concern (from the obs build)
+
+The private obs work is adding per-API-key usage + billing metrics
+(tokens/requests/est-cost by provider/model/key-alias, exported OTEL →
+Prometheus → a "LLM Usage & Billing" Grafana board, plus optional env-gated
+pollers for the Anthropic admin usage/cost API and OpenAI usage API).
+Marketplace consequence: the manifest's `pricing` field (landed in M1)
+should graduate from documentation to **meterable contract** — a binding
+declares its unit (per-call, per-token, per-page) and the platform emits a
+`tool_calls_total{tool, unit, key_alias}` metric at the dispatch seam in
+`registry.ts`, the same one-seam pattern as the chat providers. That gives
+every contributed tool usage/billing observability for free, and it's a
+prerequisite for The One Agent calling marketplace tools unattended:
+unmetered tools are invisible cost. Key rule carried over: metric labels
+carry key *aliases* (env-var name or hash prefix), never key material.
