@@ -714,3 +714,34 @@ products (Publora, SellerClaw, Vokal) — the marketplace thesis (tools
 declare agent-readiness via manifest) is the market's direction, not a
 bet. Shortlist update: Postiz-vs-Publora bake-off replaces the bare
 Postiz slot; fal.ai and Shovels unchanged.
+
+### 2026-06-11 — Bake-off verdict: Postiz takes the social-publishing slot
+
+Evaluated against the recipe bar with per-axis evidence (docs.postiz.com/
+public-api, postiz.com/pricing, github.com/gitroomhq/postiz-app; Publora's
+own site 403s bots — claims rest on its MIT publora-api-docs repo + PH).
+
+**Postiz** wins on: self-host door (POSTIZ_BASE_URL || api.postiz.com —
+the only candidate satisfying the self-host rule; Publora is hosted-only),
+OSS maturity (AGPL-3.0, 31.8k stars, 195 releases, explicit 90-100/h rate
+limits — AGPL imposes nothing on an HTTP-calling binding beyond the
+upstream block), and stability asymmetry (Publora's agent pivot launched
+2026-06-10, rate limiting "planned but not currently enforced", free tier
+excludes the API). Both auth schemes are equally BYOK-clean (plain key
+header; vendor owns the social OAuth) — auth didn't differentiate.
+
+Publora remains the better-priced hosted fallback ($2.99/account vs
+$29/mo) with an arguably more agent-shaped API (Zod-enum platforms,
+~60-byte results); re-evaluate after months of API stability.
+
+Manifest sketch recorded (id social_post, list_channels + create_post,
+secrets [POSTIZ_API_KEY], category social, pricing byok, text-only v1 —
+no media, no _ui, no SSRF guard). Blockers before building:
+(1) record real fixtures for the settings.__type per-platform mapping and
+the type now-vs-schedule body; (2) **owner call — irreversibility**: this
+would be the catalog's first tool with public side effects (a
+hallucinated create_post publishes to real accounts); decide
+schedule-only v1 (require scheduleAt ≥ N min out, cancellable in the
+Postiz UI) vs allowing "now"; (3) bridge-budget story for self-hosters
+raising API_LIMIT; (4) normalize the vendor's delete-500 bug if
+delete_post is ever added.
