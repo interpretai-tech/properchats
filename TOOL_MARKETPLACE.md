@@ -1115,3 +1115,31 @@ its runfiles (`python -c "import interpret.backend.api"`) converts this whole
 class of "merged a file, forgot the BUILD wiring" bug from a prod-startup crash
 into a CI failure. Also scan after big merges: for each `tools/*.py`, flag any
 with no target that is imported anywhere — that's the next time-bomb.
+
+### 2026-06-11 — Finding: OTLP tracing is ~free on the hot path — the real cost is full prompt/completion CONTENT capture, not spans
+Worry: "does adding OpenTelemetry slow the backend?" Measured against the code's
+actual setup, the answer is no for the request path, with one real exception:
+- **Off (endpoint unset) = strict no-op.** Guard `tracing_enabled()` on
+  `OTEL_EXPORTER_OTLP_ENDPOINT`; when unset, install nothing — the global tracer
+  stays the no-op proxy, so span calls / `set_span_attributes` are ~free and the
+  LLM-SDK instrumentors are never attached. Make "unset = silent off" the default.
+- **On = negligible latency** because export is async: use `BatchSpanProcessor`
+  (NOT `SimpleSpanProcessor`). The request thread only enqueues spans into an
+  in-memory buffer; the HTTP POST to the collector runs on a background thread,
+  off the hot path. Span creation is microseconds vs. LLM calls measured in
+  seconds — it's in the noise.
+- **The one genuine cost: content capture.** OpenLLMetry with
+  `TRACELOOP_TRACE_CONTENT=true` copies the FULL prompt + completion into span
+  attributes. For big agent payloads (multi-step agents, large PDFs, long
+  histories) that's real serialization + memory + bigger export bodies. If cost
+  matters, set it false (keep timings/token-counts/metadata, drop bodies) and/or
+  sample a fraction of traces. This is the only knob that scales with payload.
+- **Anti-pattern that LOOKS like "OTEL is slow": endpoint set but collector
+  unreachable.** The background exporter retries with backoff and logs an
+  exception per flush, and the buffer fills then drops spans — wasted CPU + log
+  spam (not request-blocking, but ugly). Fix = point at a reachable collector
+  (in dev: `kubectl port-forward` the collector's HTTP receiver — mind the port:
+  gRPC 4317 vs HTTP 4318; an HTTP exporter aimed at 4317 fails) or disable.
+Decision rule: ship tracing on-by-config, async-batched, content-capture OFF by
+default (opt in per-env), and treat "endpoint set but unreachable" as a misconfig
+to alarm on, not the steady state.
