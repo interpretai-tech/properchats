@@ -357,3 +357,15 @@ real break. Rule for the contribution recipe: tool-binding PRs that
 DELETE files must run typecheck from a clean build dir (CI already does;
 locally `rm -rf .next` first). Cheap to document, saves every contributor
 the same five confused minutes.
+
+### 2026-06-11 — Convergence as a merge gate, not vibes
+
+The simplification loop over the One Agent/admin/analytics wave converged
+measurably: 43 dead surfaces (legacy code) → 4 → 1 → 3 → 0 code-level
+findings per round, with each round forced onto *new* attack angles so a
+clean verdict isn't a replayed probe list. Rule worth adopting for
+marketplace batch reviews: a tool-catalog sweep is "done" when N
+consecutive rounds with disjoint probe strategies report clean — not when
+one review passes. The dedupe ledger (fixed vs deliberately-kept, with
+reasons) is what makes consecutive rounds cheap; without it every round
+re-litigates old adjudications.
