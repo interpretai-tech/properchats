@@ -1201,3 +1201,34 @@ bridge: turn an attached `media[]` PDF into a registered `doc_id` in a document
 context the agent loop can address. Ship the client-side make-it-visible +
 durable-upload half first (it's independent and de-risks the rest by converting a
 silent failure into a legible one) before the backend capability.
+
+### 2026-06-12 — Design: a "generic" agent tool must hold ZERO domain knowledge, and shared primitives belong below the tool, not inside it
+A PDF-building tool for the maximal agent shipped wrong: it was a separate
+package whose core tool was `build_submittal_pdf(sections=[{spec_section,
+manufacturer, model, …}])` with a construction-submittal cover-layout engine
+baked in. The capability the agent actually needs is generic — fetch a PDF,
+create one from HTML/text, concatenate — and the submittal shape was a domain
+leaking into a primitive. Rewriting it surfaced three reusable rules:
+- **Domain knowledge is a smell in a generic tool.** If a tool's argument
+  schema names entities from one vertical (spec sections, manufacturers), it's
+  not a generic tool — it's a workflow wearing a tool's clothes. The agent can
+  compose the vertical itself (emit HTML, pick an order); the tool should only
+  expose the domain-free verbs. Generic verbs also collapse the surface: three
+  thin tools (fetch/create/merge) replaced a bespoke package.
+- **Push byte/primitive work DOWN, keep the tool a thin wrapper.** The bad
+  version re-implemented PDF merge and hashing inside the toolset. The fix
+  routed all of it to the existing processing layer (one canonical
+  `merge_pdfs`, one `render_html_to_pdf`, one `sha256_bytes` that is the single
+  definition of the hash idiom). A tool that duplicates a primitive will drift
+  from it; reuse keeps determinism/caching guarantees that already exist.
+- **Provider-agnostic operations deserve ONE dispatch point, not per-provider
+  imports at every call site.** The store imported both the S3 presigner and
+  the GCS signer and branched on storage type inline. The right shape is a
+  single `cloud_presigned_url(storage_type, …)` next to the existing
+  `cloud_upload_obj` (same `match storage_type` dispatch), so callers pass a
+  type enum and never import a specific cloud. New providers slot in at the
+  dispatch, not across N call sites.
+Corollary (naming hygiene): when one word means three things in a codebase —
+here "token" = tool-identifier vs auth-credential vs LLM-usage-count —
+disambiguate it in prose ("tool identifier") while leaving the code symbols
+alone, so comments stay greppable and unambiguous without churning the API.
