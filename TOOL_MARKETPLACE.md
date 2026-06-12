@@ -1170,3 +1170,34 @@ list — and it's easy to ship a curated subset by accident. Two traps surfaced:
 
 ### 2026-06-12 — Gotcha: an agent's tool GRANT originates at the client — registering a toolset server-side isn't enough
 A subtle distributed bug surfaced while shipping "all tools on the one agent": after merging the backend change that registers new toolsets (web_search/code_execution/url_context) AND the client change that expands the grant list, a live run STILL showed only the old tools. Root cause: the agent's grant list (`tools:[…]`) is emitted by the CLIENT and merely consumed by the backend — the backend assembles whatever tokens the client sends and can't add a capability the client didn't list. So three things must all be true for a new agent tool to appear: (1) the toolset is registered in the backend, (2) the client's grant list includes its token, AND (3) **the client is actually redeployed** — merging the client change to main does nothing until the user-facing app is rebuilt/shipped. "Merged" ≠ "deployed," and for a client-emitted grant the deploy that matters is the *client's*, not the backend's. Debugging rule: when a just-added capability doesn't show up, read the grant list in the live request log FIRST — if it's the old set, the gap is client deploy, not backend wiring (don't go spelunking the backend registry). Corollary from the same session: external-API objects named content-addressed (e.g. Gemini Files `sha256-<hash>`) collide across rotated/per-identity ownership — a name can be simultaneously "already exists" (409) to a writer and "forbidden" (403) to a reader when a different key owns it; deterministic names need a unique-fallback escape hatch, not just a get-or-create.
+
+### 2026-06-12 — Root cause + design: a "large PDF" attachment fails SILENTLY because the chat path inlines it, and the fix is an agentic document session, not a bigger context window
+Attaching a big PDF (~30–60MB / ~600 pages) to a chat looked attached (a "pdf"
+chip), sent fine, and the model answered with zero knowledge of the doc — no
+error, no log. Three compounding causes, each independently silent:
+- **Inline-to-provider ceiling.** The chat route base64-inlines the PDF into one
+  completion. Providers cap PDFs hard (Anthropic: 32MB / 600 pages, 100 pages on
+  200k-ctx models) and reject past that. One inference call can never "read" 600
+  pages — that's the wrong primitive, not a tuning problem.
+- **Upload misroute → invisible drop.** The >4.2MB path used a generic presign
+  to the wrong bucket with a 50MiB cap; on any failure it fell back to an inline
+  `data:` URL, and for >20MB that became an empty URI — the attachment vanished
+  with a success-looking UI. Lesson: an upload "fallback" that yields an empty
+  reference is worse than a thrown error; degrade paths must surface, not swallow.
+- **No RAG anywhere.** There is no vector store / retrieval in the stack
+  (`file_search` is a staged, unsupported token), so "let the model search the
+  doc" can't be a retrieval call.
+Design rule (matches how SOTA systems handle big PDFs — incremental reading, not
+context-stuffing): detect "large" on attach, and route to an **agentic document
+session** that *walks* the PDF on demand — read N pages, find-text, get-chunks,
+OCR, and a single `get_full_document_text` as the explicit transcribe path —
+driven by the user's prompt turn-by-turn, with the PDF referenced by durable
+`s3://` (per-user prefix), never inlined into the chat tree (which syncs to S3 as
+deltas — 600 pages of text in a message would balloon every sync). Two user
+intents to expose: (1) think about the doc agentically, (2) parse to text. The
+agentic harness for this often ALREADY exists server-side and just isn't reachable
+from the chat route with a request-attached file — the missing piece is one
+bridge: turn an attached `media[]` PDF into a registered `doc_id` in a document
+context the agent loop can address. Ship the client-side make-it-visible +
+durable-upload half first (it's independent and de-risks the rest by converting a
+silent failure into a legible one) before the backend capability.
